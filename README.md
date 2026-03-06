@@ -35,32 +35,44 @@ C3F/
 ├── database/
 │   └── schema.sql      # MySQL 8 建表脚本
 └── deploy/
-    ├── nginx.conf      # Nginx 反向代理配置
-    ├── start.sh        # 一键部署脚本
-    └── restart_backend.sh
+    ├── environment.yml     # Conda 环境定义
+    ├── nginx.conf          # Nginx 反向代理配置
+    ├── start.sh            # 一键部署脚本（Conda）
+    └── restart_backend.sh  # 后端快速重启脚本
 ```
 
 ---
 
-## 快速部署（Ubuntu 服务器）
+## 快速部署（Ubuntu 服务器，使用 Conda）
+
+> **前提**：服务器已安装 Conda（Miniconda 或 Anaconda）。
+> 脚本会自动在 `~/miniconda3`、`~/anaconda3`、`/opt/miniconda3`、`/opt/anaconda3`、`/opt/conda`
+> 中搜索 Conda 安装目录。如果不在以上路径，请在运行前设置 `CONDA_BASE` 环境变量。
 
 ### 1. 克隆代码到服务器
 
 ```bash
 ssh szh@10.109.119.208
-cd /home/szh
-git clone <repo_url> system
+mkdir -p /home/szh/system
+cd /home/szh/system
+git clone <repo_url> C3F
 ```
 
 ### 2. 一键部署
 
 ```bash
-cd /home/szh/system
+cd /home/szh/system/C3F
 chmod +x deploy/start.sh
 bash deploy/start.sh
 ```
 
-脚本自动完成：系统依赖安装 → Python 虚拟环境 → 数据库初始化 → Nginx 配置 → 启动后台服务。
+脚本自动完成：系统依赖安装 → Conda 环境创建（禁用代理）→ 数据库初始化 → Nginx 配置 → 启动后台服务。
+
+如需显式指定 Conda 路径：
+
+```bash
+CONDA_BASE=/home/szh/miniconda3 bash deploy/start.sh
+```
 
 ### 3. 手动部署（分步）
 
@@ -74,24 +86,28 @@ mysql -u root -p < database/schema.sql
 
 编辑 `backend/config.py`，修改 `DB_CONFIG` 中的 `password` 为 MySQL root 密码。
 
-#### 安装 Python 依赖
+#### 创建 Conda 环境
 
 ```bash
-cd backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+# 禁用代理（服务器无代理时必须设置，否则 conda 会尝试连接代理而超时）
+conda config --set proxy_servers.http  ""
+conda config --set proxy_servers.https ""
+
+# 创建环境
+conda env create -n c3f -f deploy/environment.yml
 ```
 
-> 注：EasyOCR 体积较大，首次运行会自动下载语言模型（需要联网）。  
-> 如果不需要 OCR 功能，可只安装 `Flask Flask-Cors PyMySQL Pillow langdetect`，系统将使用模拟数据演示。
+#### 安装 Python 依赖（pip，禁用代理）
+
+```bash
+~/miniconda3/envs/c3f/bin/pip install --no-proxy -r backend/requirements.txt
+```
 
 #### 启动后端
 
 ```bash
-cd backend
-source venv/bin/activate
-python app.py          # 监听 0.0.0.0:5000
+# 使用 conda 环境中的 python 直接运行（不需要 conda activate）
+~/miniconda3/envs/c3f/bin/python backend/app.py
 ```
 
 #### 配置 Nginx
@@ -131,7 +147,7 @@ sudo nginx -t && sudo systemctl reload nginx
 | 语种检测 | langdetect |
 | 数据库 | MySQL 8 |
 | Web 服务器 | Nginx（反向代理） |
-| 部署环境 | Ubuntu Linux |
+| 部署环境 | Ubuntu Linux + Conda + Nginx + systemd |
 
 ---
 

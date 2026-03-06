@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>历史记录 - 文种识别系统</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <style>
+    body { font-family:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+           background:#f0f7ff; color:#1e293b; }
+    .card { background:#fff; border-radius:1.25rem; padding:1.5rem;
+            box-shadow:0 2px 12px rgba(0,0,0,.06); border:1.5px solid #f1f5f9; }
+    .badge { display:inline-block; padding:.2rem .65rem; border-radius:9999px;
+             font-size:.7rem; font-weight:600; }
+    .btn { display:inline-flex; align-items:center; gap:.4rem;
+           padding:.5rem 1rem; border-radius:.75rem; font-size:.85rem;
+           font-weight:500; cursor:pointer; border:none; transition:all .2s; }
+    .btn-primary { background:#3b82f6; color:#fff; }
+    .btn-primary:hover { background:#2563eb; }
+    .btn-danger  { background:#fef2f2; color:#ef4444; }
+    .btn-danger:hover  { background:#fee2e2; }
+    .btn-sm { padding:.35rem .75rem; font-size:.8rem; }
+    .input-field {
+      padding:.55rem .9rem; border:1.5px solid #e2e8f0; border-radius:.75rem;
+      font-size:.875rem; outline:none; color:#374151; background:#fff;
+      transition:border .2s;
+    }
+    .input-field:focus { border-color:#3b82f6; }
+    select.input-field { appearance:none; }
+    table { border-collapse:collapse; width:100%; }
+    th { font-weight:600; font-size:.78rem; color:#94a3b8; text-align:left; }
+    td { font-size:.875rem; color:#374151; }
+    tr:hover td { background:#f8fafc; }
+    .page-btn {
+      min-width:36px; height:36px; padding:0 .5rem; border-radius:.625rem;
+      display:inline-flex; align-items:center; justify-content:center;
+      font-size:.875rem; font-weight:500; cursor:pointer; border:1.5px solid #e2e8f0;
+      background:#fff; color:#475569; transition:all .2s;
+    }
+    .page-btn:hover  { border-color:#3b82f6; color:#3b82f6; }
+    .page-btn.active { background:#3b82f6; color:#fff; border-color:#3b82f6; }
+    .page-btn:disabled { opacity:.4; cursor:not-allowed; }
+
+    /* 图片灯箱 */
+    #lightbox { position:fixed; inset:0; background:rgba(0,0,0,.8); z-index:9999;
+                display:flex; align-items:center; justify-content:center; }
+    #lightboxImg { max-width:90vw; max-height:90vh; border-radius:1rem; }
+    #lightboxClose { position:absolute; top:1rem; right:1.5rem; color:#fff; font-size:2rem;
+                     cursor:pointer; background:none; border:none; }
+  </style>
+</head>
+<body class="p-6">
+
+  <!-- 标题 -->
+  <div class="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-3">
+    <div>
+      <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-clock-rotate-left text-green-500 mr-2"></i>历史识别记录</h2>
+      <p class="text-sm text-gray-400 mt-0.5">共 <span id="totalCount" class="text-blue-600 font-semibold">-</span> 条记录</p>
+    </div>
+    <a href="upload.html"
+       onclick="if(window.parent!==window){window.parent.loadPage(null,'upload.html');return false;}"
+       class="btn btn-primary">
+      <i class="fas fa-plus"></i>新建识别
+    </a>
+  </div>
+
+  <!-- 筛选栏 -->
+  <div class="card mb-4">
+    <div class="flex flex-wrap gap-3 items-end">
+      <div class="flex-1 min-w-[200px]">
+        <label class="block text-xs font-medium text-gray-500 mb-1.5">
+          <i class="fas fa-search text-gray-400 mr-1"></i>搜索
+        </label>
+        <input type="text" id="searchInput" placeholder="文件名或识别文本..." class="input-field w-full"
+               oninput="debounceSearch()">
+      </div>
+      <div class="min-w-[160px]">
+        <label class="block text-xs font-medium text-gray-500 mb-1.5">
+          <i class="fas fa-filter text-gray-400 mr-1"></i>语种筛选
+        </label>
+        <select id="langFilter" class="input-field w-full" onchange="loadHistory()">
+          <option value="">全部语种</option>
+          <option value="zh">中文</option>
+          <option value="en">英文</option>
+          <option value="ja">日文</option>
+          <option value="ko">韩文</option>
+          <option value="ar">阿拉伯文</option>
+          <option value="fr">法文</option>
+          <option value="de">德文</option>
+          <option value="es">西班牙文</option>
+          <option value="ru">俄文</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" onclick="loadHistory()">
+        <i class="fas fa-search"></i>查询
+      </button>
+      <button class="btn" style="background:#f1f5f9;color:#64748b" onclick="resetFilter()">
+        <i class="fas fa-rotate-left"></i>重置
+      </button>
+    </div>
+  </div>
+
+  <!-- 表格 -->
+  <div class="card">
+    <div id="tableArea">
+      <div class="text-center py-12 text-gray-400">
+        <i class="fas fa-spinner fa-spin text-3xl mb-3 block text-blue-300"></i>加载中...
+      </div>
+    </div>
+
+    <!-- 分页 -->
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between mt-5 gap-3 border-t border-gray-100 pt-4">
+      <div class="text-xs text-gray-400" id="pageInfo">-</div>
+      <div class="flex items-center gap-2" id="pagination"></div>
+    </div>
+  </div>
+
+  <!-- 灯箱 -->
+  <div id="lightbox" class="hidden">
+    <button id="lightboxClose" onclick="closeLightbox()">
+      <i class="fas fa-times"></i>
+    </button>
+    <img id="lightboxImg" src="" alt="预览">
+  </div>
+
+  <script>
+    const API = 'http://10.109.119.208';
+    const user = JSON.parse(localStorage.getItem('c3f_user') || 'null');
+    if (!user) { window.top.location.href = 'login.html'; }
+
+    let currentPage = 1;
+    const perPage   = 10;
+    let searchTimer = null;
+
+    const LANG_BADGE = {
+      zh:'bg-red-100 text-red-700', en:'bg-blue-100 text-blue-700',
+      ja:'bg-pink-100 text-pink-700', ko:'bg-purple-100 text-purple-700',
+      ar:'bg-green-100 text-green-700', fr:'bg-sky-100 text-sky-700',
+      de:'bg-orange-100 text-orange-700', es:'bg-yellow-100 text-yellow-700',
+      ru:'bg-indigo-100 text-indigo-700',
+    };
+
+    function debounceSearch() {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => { currentPage = 1; loadHistory(); }, 400);
+    }
+    function resetFilter() {
+      document.getElementById('searchInput').value = '';
+      document.getElementById('langFilter').value  = '';
+      currentPage = 1;
+      loadHistory();
+    }
+
+    async function loadHistory() {
+      const search   = document.getElementById('searchInput').value.trim();
+      const language = document.getElementById('langFilter').value;
+      const area     = document.getElementById('tableArea');
+      area.innerHTML = `<div class="text-center py-12 text-gray-400">
+        <i class="fas fa-spinner fa-spin text-3xl mb-3 block text-blue-300"></i>加载中...</div>`;
+
+      try {
+        const params = new URLSearchParams({
+          page: currentPage, per_page: perPage, search, language
+        });
+        const res = await fetch(`${API}/api/history?${params}`, { credentials:'include' });
+        if (res.status === 401) { window.top.location.href = 'login.html'; return; }
+        const d = await res.json();
+        if (!d.success) throw new Error(d.message);
+
+        document.getElementById('totalCount').textContent = d.total;
+        renderTable(d.records);
+        renderPagination(d.pages, d.page, d.total);
+      } catch(e) {
+        area.innerHTML = `<div class="text-center py-12 text-red-400">
+          <i class="fas fa-circle-exclamation text-2xl mb-2 block"></i>加载失败：${e.message}</div>`;
+      }
+    }
+
+    function renderTable(rows) {
+      if (!rows.length) {
+        document.getElementById('tableArea').innerHTML = `
+          <div class="text-center py-16 text-gray-300">
+            <i class="fas fa-inbox text-5xl mb-4 block"></i>
+            <p class="text-gray-400 font-medium">暂无识别记录</p>
+            <p class="text-sm mt-1">上传图像开始第一次识别吧</p>
+          </div>`;
+        return;
+      }
+
+      const html = `
+        <div class="overflow-x-auto">
+        <table>
+          <thead>
+            <tr class="border-b border-gray-100">
+              <th class="py-3 pr-4 pl-1 w-16">预览</th>
+              <th class="py-3 pr-4">文件名</th>
+              <th class="py-3 pr-4">识别语种</th>
+              <th class="py-3 pr-4">置信度</th>
+              <th class="py-3 pr-4 hidden md:table-cell">识别文本</th>
+              <th class="py-3 pr-4 hidden md:table-cell">识别时间</th>
+              <th class="py-3 text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-50">
+            ${rows.map(r => {
+              const lc   = (r.detected_language || '').toLowerCase();
+              const cls  = LANG_BADGE[lc] || 'bg-gray-100 text-gray-600';
+              const conf = r.confidence ? `${r.confidence.toFixed(1)}%` : '-';
+              const txt  = (r.detected_text || '').slice(0, 40) + ((r.detected_text||'').length > 40 ? '…' : '');
+              return `
+                <tr>
+                  <td class="py-3 pr-4 pl-1">
+                    <img src="${API}${r.image_url}" alt="缩略图"
+                         class="w-12 h-12 rounded-lg object-cover cursor-pointer border border-gray-200 hover:opacity-80"
+                         onclick="openLightbox('${API}${r.image_url}')"
+                         onerror="this.src='';this.className='w-12 h-12 rounded-lg bg-gray-100 flex items-center justify-center'">
+                  </td>
+                  <td class="py-3 pr-4 max-w-[150px]">
+                    <div class="truncate text-gray-700 font-medium">${r.original_filename || '-'}</div>
+                    <div class="text-xs text-gray-400">${formatBytes(r.file_size)}</div>
+                  </td>
+                  <td class="py-3 pr-4">
+                    <span class="badge ${cls}">${r.language_name || '-'}</span>
+                  </td>
+                  <td class="py-3 pr-4">
+                    <div class="flex items-center gap-2">
+                      <div style="width:60px;height:8px;border-radius:99px;background:#e2e8f0;overflow:hidden">
+                        <div style="width:${Math.min(100,r.confidence||0)}%;height:100%;background:#3b82f6;border-radius:99px"></div>
+                      </div>
+                      <span class="text-xs text-gray-500">${conf}</span>
+                    </div>
+                  </td>
+                  <td class="py-3 pr-4 hidden md:table-cell text-gray-400 text-xs max-w-[200px]">
+                    <div class="truncate">${txt || '-'}</div>
+                  </td>
+                  <td class="py-3 pr-4 hidden md:table-cell text-gray-400 text-xs whitespace-nowrap">
+                    ${(r.created_at||'').slice(0,16)}
+                  </td>
+                  <td class="py-3 text-right">
+                    <button onclick="deleteRecord(${r.id}, this)"
+                      class="btn btn-danger btn-sm">
+                      <i class="fas fa-trash-alt"></i>
+                    </button>
+                  </td>
+                </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+        </div>`;
+      document.getElementById('tableArea').innerHTML = html;
+    }
+
+    function renderPagination(pages, page, total) {
+      document.getElementById('pageInfo').textContent =
+        `共 ${total} 条记录，第 ${page} / ${Math.max(1,pages)} 页`;
+
+      const pag = document.getElementById('pagination');
+      if (pages <= 1) { pag.innerHTML = ''; return; }
+
+      let html = `<button class="page-btn" onclick="gotoPage(${page-1})" ${page<=1?'disabled':''}>
+                    <i class="fas fa-chevron-left text-xs"></i></button>`;
+      for (let i = 1; i <= pages; i++) {
+        if (i === 1 || i === pages || Math.abs(i - page) <= 2) {
+          html += `<button class="page-btn ${i===page?'active':''}" onclick="gotoPage(${i})">${i}</button>`;
+        } else if (Math.abs(i - page) === 3) {
+          html += `<span class="text-gray-400 px-1">…</span>`;
+        }
+      }
+      html += `<button class="page-btn" onclick="gotoPage(${page+1})" ${page>=pages?'disabled':''}>
+                 <i class="fas fa-chevron-right text-xs"></i></button>`;
+      pag.innerHTML = html;
+    }
+
+    function gotoPage(p) {
+      currentPage = p;
+      loadHistory();
+      window.scrollTo({ top:0, behavior:'smooth' });
+    }
+
+    async function deleteRecord(id, btn) {
+      if (!confirm('确认删除该记录？此操作不可恢复。')) return;
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+      try {
+        const res = await fetch(`${API}/api/history/${id}`, {
+          method:'DELETE', credentials:'include'
+        });
+        const d = await res.json();
+        if (d.success) loadHistory();
+        else alert('删除失败：' + (d.message||''));
+      } catch(e) {
+        alert('删除失败，请检查网络连接');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-trash-alt"></i>';
+      }
+    }
+
+    function openLightbox(url) {
+      document.getElementById('lightboxImg').src = url;
+      document.getElementById('lightbox').classList.remove('hidden');
+    }
+    function closeLightbox() {
+      document.getElementById('lightbox').classList.add('hidden');
+    }
+    document.getElementById('lightbox').addEventListener('click', function(e) {
+      if (e.target === this) closeLightbox();
+    });
+
+    function formatBytes(b) {
+      if (!b) return '';
+      if (b < 1024) return b + ' B';
+      if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+      return (b/1048576).toFixed(1) + ' MB';
+    }
+
+    loadHistory();
+  </script>
+</body>
+</html>

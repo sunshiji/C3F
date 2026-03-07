@@ -58,8 +58,12 @@ echo "  目录创建完成 ✓"
 # ── 3. 同步代码 ───────────────────────────────────────────────
 echo "[3/6] 同步代码文件..."
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-cp -r "$SCRIPT_DIR/backend/"*  "$BACKEND_DIR/"
-cp -r "$SCRIPT_DIR/frontend/"* "$FRONTEND_DIR/"
+if [ "$(realpath "$SCRIPT_DIR")" = "$(realpath "$SYSTEM_DIR")" ]; then
+    echo "  检测到原地部署（脚本已在 $SYSTEM_DIR 中），跳过文件复制。"
+else
+    cp -r "$SCRIPT_DIR/backend/"*  "$BACKEND_DIR/"
+    cp -r "$SCRIPT_DIR/frontend/"* "$FRONTEND_DIR/"
+fi
 chmod 755 "$BACKEND_DIR/uploads"
 echo "  代码同步完成 ✓"
 

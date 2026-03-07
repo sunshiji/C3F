@@ -39,12 +39,11 @@ def get_ocr_reader():
     if _ocr_reader is None:
         try:
             import easyocr
-            # 加载中/英/日/韩等常用语言模型
-            _ocr_reader = easyocr.Reader(
-                ['ch_sim', 'en', 'ja', 'ko'],
-                gpu=False, verbose=False
-            )
-            logger.info('EasyOCR reader initialized')
+            kwargs = {'gpu': False, 'verbose': False}
+            if config.OCR_MODEL_DIR:
+                kwargs['model_storage_directory'] = config.OCR_MODEL_DIR
+            _ocr_reader = easyocr.Reader(config.OCR_LANGS, **kwargs)
+            logger.info('EasyOCR reader initialized (langs: %s)', ', '.join(config.OCR_LANGS))
         except Exception as e:
             logger.warning(f'EasyOCR unavailable: {e}')
     return _ocr_reader
@@ -88,12 +87,124 @@ LANGUAGE_NAMES = {
     'no':    ('挪威文',      'Norwegian'),
     'ca':    ('加泰罗尼亚文','Catalan'),
     'sr':    ('塞尔维亚文',  'Serbian'),
+    'bn':    ('孟加拉文',    'Bengali'),
+    'gu':    ('古吉拉特文',  'Gujarati'),
+    'pa':    ('旁遮普文',    'Punjabi'),
+    'kn':    ('卡纳达文',    'Kannada'),
+    'ta':    ('泰米尔文',    'Tamil'),
+    'te':    ('泰卢固文',    'Telugu'),
+    'or':    ('奥里亚文',    'Odia'),
+    'mn':    ('蒙古文',      'Mongolian'),
+    'bo':    ('藏文',        'Tibetan'),
+    'km':    ('柬埔寨文',    'Khmer'),
+    'la':    ('拉丁文',      'Latin'),
+    'mr':    ('马拉地文',    'Marathi'),
+    'ne':    ('尼泊尔文',    'Nepali'),
     'unknown': ('未知语言',  'Unknown'),
 }
 
 def get_lang_name(code):
     code = (code or '').lower()
     return LANGUAGE_NAMES.get(code, (f'其他({code})', f'Other({code})'))
+
+# ── Unicode 字符脚本检测 ────────────────────────────────────────
+# Maps Unicode code-point ranges to ISO 639-1 language codes.
+# Hiragana/Katakana are listed before CJK so Japanese is detected first
+# (kanji alone is ambiguous between Chinese and Japanese).
+_SCRIPT_RANGES = (
+    (0x3040, 0x309F, 'ja'),   # Hiragana
+    (0x30A0, 0x30FF, 'ja'),   # Katakana
+    (0x31F0, 0x31FF, 'ja'),   # Katakana Phonetic Extensions
+    (0xAC00, 0xD7AF, 'ko'),   # Hangul Syllables
+    (0x1100, 0x11FF, 'ko'),   # Hangul Jamo
+    (0xA960, 0xA97F, 'ko'),   # Hangul Jamo Extended-A
+    (0x4E00, 0x9FFF, 'zh'),   # CJK Unified Ideographs
+    (0x3400, 0x4DBF, 'zh'),   # CJK Extension A
+    (0xF900, 0xFAFF, 'zh'),   # CJK Compatibility Ideographs
+    (0x0600, 0x06FF, 'ar'),   # Arabic
+    (0x0750, 0x077F, 'ar'),   # Arabic Supplement
+    (0x08A0, 0x08FF, 'ar'),   # Arabic Extended-A
+    (0xFB50, 0xFDFF, 'ar'),   # Arabic Presentation Forms-A
+    (0xFE70, 0xFEFF, 'ar'),   # Arabic Presentation Forms-B
+    (0x0400, 0x04FF, 'ru'),   # Cyrillic
+    (0x0500, 0x052F, 'ru'),   # Cyrillic Supplement
+    (0x0900, 0x097F, 'hi'),   # Devanagari (Hindi / Sanskrit)
+    (0x0980, 0x09FF, 'bn'),   # Bengali
+    (0x0A80, 0x0AFF, 'gu'),   # Gujarati
+    (0x0A00, 0x0A7F, 'pa'),   # Gurmukhi (Punjabi)
+    (0x0C80, 0x0CFF, 'kn'),   # Kannada
+    (0x0B80, 0x0BFF, 'ta'),   # Tamil
+    (0x0C00, 0x0C7F, 'te'),   # Telugu
+    (0x0B00, 0x0B7F, 'or'),   # Odia
+    (0x0E00, 0x0E7F, 'th'),   # Thai
+    (0x0F00, 0x0FFF, 'bo'),   # Tibetan
+    (0x1800, 0x18AF, 'mn'),   # Mongolian
+    (0x0370, 0x03FF, 'el'),   # Greek
+    (0x0590, 0x05FF, 'he'),   # Hebrew
+    (0x1780, 0x17FF, 'km'),   # Khmer
+)
+
+# Minimum fraction of alphabetic characters that must belong to a script
+# before it is reported as the dominant script.  A 15 % floor prevents a
+# handful of stray characters from overriding a predominantly Latin result.
+_SCRIPT_DETECTION_THRESHOLD = 0.15
+
+# Minimum fraction of alphabetic characters that must be Hiragana/Katakana
+# to classify text as Japanese (kana-unique to Japanese; shared kanji are
+# then absorbed into the Japanese total).  5 % covers even lightly-annotated
+# texts while avoiding mis-classifying predominantly-Chinese text that
+# happens to contain a single kana character.
+_SCRIPT_JA_KANA_MIN_RATIO = 0.05
+
+def _detect_script(text):
+    """Detect the dominant Unicode script in *text*.
+
+    Returns (lang_code, confidence_pct):
+      - non-Latin script clearly dominant  → (iso_code, pct)
+      - text is Latin / ASCII              → ('latin', pct)
+      - no alphabetic characters found     → (None, 0.0)
+
+    Japanese is identified when Hiragana/Katakana characters make up at
+    least _SCRIPT_JA_KANA_MIN_RATIO of alphabetic characters; shared CJK
+    ideographs are then counted toward the Japanese total.
+    """
+    counts = {}
+    latin_count = 0
+    total_alpha = 0
+    for ch in text:
+        if not ch.isalpha():
+            continue
+        total_alpha += 1
+        cp = ord(ch)
+        matched = False
+        for start, end, lang in _SCRIPT_RANGES:
+            if start <= cp <= end:
+                counts[lang] = counts.get(lang, 0) + 1
+                matched = True
+                break
+        if not matched and ch.isascii():
+            latin_count += 1
+
+    if total_alpha == 0:
+        return None, 0.0
+
+    # Japanese: Hiragana/Katakana are unique to Japanese — absorb shared
+    # CJK ideographs only when kana meets the minimum ratio threshold.
+    ja_kana = counts.get('ja', 0)
+    if ja_kana / total_alpha >= _SCRIPT_JA_KANA_MIN_RATIO:
+        ja_total = ja_kana + counts.get('zh', 0)
+        return 'ja', round(ja_total / total_alpha * 100, 1)
+
+    if counts:
+        top_lang = max(counts, key=counts.get)
+        top_ratio = counts[top_lang] / total_alpha
+        if top_ratio >= _SCRIPT_DETECTION_THRESHOLD:
+            return top_lang, round(top_ratio * 100, 1)
+
+    if latin_count / total_alpha >= _SCRIPT_DETECTION_THRESHOLD:
+        return 'latin', round(latin_count / total_alpha * 100, 1)
+
+    return None, 0.0
 
 # ── 数据库 ─────────────────────────────────────────────────────
 def get_db():
@@ -381,24 +492,45 @@ def recognize():
                 detected_text = ''
 
         if detected_text.strip():
-            try:
-                from langdetect import detect, detect_langs
-                lang_code  = detect(detected_text)
-                raw_langs  = detect_langs(detected_text)
-                all_langs  = [{'lang': str(l).split(':')[0],
-                                'prob': round(float(str(l).split(':')[1]) * 100, 1)}
-                               for l in raw_langs]
-                # 补充语言名称
-                for item in all_langs:
-                    zh, en = get_lang_name(item['lang'])
-                    item['name_zh'] = zh
-                    item['name_en'] = en
-                # 主语言置信度
-                top = next((l for l in all_langs if l['lang'] == lang_code), None)
-                if top:
-                    confidence = top['prob']
-            except Exception as e:
-                logger.warning(f'langdetect error: {e}')
+            # Step 1: Unicode script detection — reliable for all non-Latin
+            # scripts regardless of text length or langdetect biases.
+            script_lang, script_conf = _detect_script(detected_text)
+
+            if script_lang and script_lang != 'latin':
+                # Non-Latin script clearly identified from character ranges alone.
+                lang_code  = script_lang
+                confidence = script_conf
+                zh, en = get_lang_name(lang_code)
+                all_langs = [{'lang': lang_code, 'name_zh': zh,
+                              'name_en': en, 'prob': script_conf}]
+            else:
+                # Latin-script or ambiguous: use langdetect to distinguish
+                # between English, French, German, Spanish, etc.
+                try:
+                    from langdetect import detect, detect_langs
+                    lang_code = detect(detected_text)
+                    raw_langs = detect_langs(detected_text)
+                    all_langs = [
+                        {'lang': str(l).split(':')[0],
+                         'prob': round(float(str(l).split(':')[1]) * 100, 1)}
+                        for l in raw_langs
+                    ]
+                    for item in all_langs:
+                        zh, en = get_lang_name(item['lang'])
+                        item['name_zh'] = zh
+                        item['name_en'] = en
+                    top = next((l for l in all_langs if l['lang'] == lang_code), None)
+                    if top:
+                        confidence = top['prob']
+                except Exception as e:
+                    logger.warning(f'langdetect error: {e}')
+                    if script_lang == 'latin':
+                        # Fallback: Latin text but langdetect failed
+                        lang_code  = 'en'
+                        confidence = 50.0
+                        zh, en = get_lang_name('en')
+                        all_langs = [{'lang': 'en', 'name_zh': zh,
+                                      'name_en': en, 'prob': 50.0}]
         else:
             # 无文本时根据图像统计模拟（演示用）
             lang_code  = _FALLBACK_LANG_CODE

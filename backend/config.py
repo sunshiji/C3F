@@ -13,6 +13,23 @@ UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
 #   DB_PATH=/path/to/c3f.db python app.py
 DB_PATH = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'c3f.db'))
 
+# ── EasyOCR ───────────────────────────────────────────────────
+# Comma-separated EasyOCR language codes loaded at startup.
+# Reduce this list for faster startup; extend it for broader coverage.
+# Override via env: OCR_LANGS=ch_sim,en,ar python app.py
+# Full language list: https://www.jaided.ai/easyocr/
+_DEFAULT_OCR_LANGS = 'ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,ta,kn,te'
+OCR_LANGS = [l.strip() for l in
+             os.environ.get('OCR_LANGS', _DEFAULT_OCR_LANGS).split(',')
+             if l.strip()]
+
+# Directory where EasyOCR reads model weight files.
+# Point this to a folder of pre-downloaded .pth files to avoid any
+# network access at startup.
+# Override via env: OCR_MODEL_DIR=/path/to/models python app.py
+# Default: None → EasyOCR uses ~/.EasyOCR/model/
+OCR_MODEL_DIR = os.environ.get('OCR_MODEL_DIR') or None
+
 # ── Upload limits ──────────────────────────────────────────────
 MAX_CONTENT_MB = 16
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff'}

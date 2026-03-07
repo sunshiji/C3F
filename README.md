@@ -164,6 +164,84 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ---
 
+### 5. OCR 模型预下载（无外网服务器必读）
+
+EasyOCR 在**首次加载**某个语种时会从网络自动下载对应的模型权重文件。  
+若服务器无法访问外网，会出现以下错误并导致识别功能失效：
+
+```
+WARNING EasyOCR unavailable: <urlopen error [Errno 101] Network is unreachable>
+```
+
+解决方法：在**有网络的机器**上提前下载所有模型，再拷贝到服务器。
+
+#### 5.1 在有网络的机器上下载模型
+
+```bash
+# 激活 c3f 环境
+conda activate c3f
+
+# 触发下载；模型默认存储到 ~/.EasyOCR/model/（约 1–3 GB）
+python - <<'EOF'
+import easyocr
+easyocr.Reader(
+    ['ch_sim', 'ch_tra', 'en', 'ja', 'ko',
+     'ar', 'hi', 'ru', 'th', 'bn', 'ta', 'kn', 'te'],
+    gpu=False,
+    download_enabled=True,
+)
+print("模型下载完成，路径：~/.EasyOCR/model/")
+EOF
+```
+
+#### 5.2 将模型拷贝到服务器
+
+```bash
+# 将下载好的模型目录整体拷贝到服务器（路径可自定义）
+scp -r ~/.EasyOCR/model/ szh@10.109.119.208:/home/szh/system/C3F/ocr_models/
+```
+
+#### 5.3 配置 OCR_MODEL_DIR 指向模型目录
+
+**方法 A：手动启动时指定**
+
+```bash
+OCR_MODEL_DIR=/home/szh/system/C3F/ocr_models \
+  /home/szh/anaconda3/envs/c3f/bin/python backend/app.py
+```
+
+**方法 B：写入 systemd 服务文件**（推荐，重启后自动生效）
+
+编辑 `~/.config/systemd/user/c3f.service`，在 `[Service]` 节中添加：
+
+```ini
+[Service]
+Environment="OCR_MODEL_DIR=/home/szh/system/C3F/ocr_models"
+```
+
+然后重新加载并重启：
+
+```bash
+systemctl --user daemon-reload
+systemctl --user restart c3f
+```
+
+#### 5.4 可选：精简加载语言以加快启动
+
+默认加载 13 个语种（`ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,ta,kn,te`）。  
+如需加快启动速度或减少内存占用，可通过 `OCR_LANGS` 只加载所需语种：
+
+```bash
+OCR_LANGS=ch_sim,en,ja,ko \
+OCR_MODEL_DIR=/home/szh/system/C3F/ocr_models \
+  /home/szh/anaconda3/envs/c3f/bin/python backend/app.py
+```
+
+> **注**：`OCR_LANGS` 中的每个语种都必须在 `OCR_MODEL_DIR` 中有对应的模型文件，否则仍会尝试下载。  
+> EasyOCR 支持语种完整列表：<https://www.jaided.ai/easyocr/>
+
+---
+
 ## 访问
 
 | 地址 | 说明 |

@@ -17,13 +17,6 @@ SYSTEM_DIR="/home/szh/system/C3F"
 BACKEND_DIR="$SYSTEM_DIR/backend"
 FRONTEND_DIR="$SYSTEM_DIR/frontend"
 
-# ── 数据库连接参数（可通过环境变量覆盖）─────────────────────────
-DB_HOST="${DB_HOST:-localhost}"
-DB_PORT="${DB_PORT:-3306}"
-DB_USER="${DB_USER:-c3f_user}"
-DB_PASSWORD="${DB_PASSWORD:-c3f_pass}"
-DB_NAME="${DB_NAME:-c3f_db}"
-
 USER_SYSTEMD_DIR="$HOME/.config/systemd/user"
 SERVICE_FILE="$USER_SYSTEMD_DIR/c3f.service"
 
@@ -40,9 +33,9 @@ fi
 echo "  conda：$CONDA_BIN ✓"
 
 # ── 1. 系统依赖提示（无 sudo，需管理员预装）──────────────────
-echo "[1/6] 系统依赖检查（本步骤不安装，仅提示）..."
+echo "[1/5] 系统依赖检查（本步骤不安装，仅提示）..."
 missing_hint=0
-for cmd in mysql tesseract; do
+for cmd in tesseract; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "  [提示] 命令 '$cmd' 未找到，请联系管理员确认已安装对应软件包。"
         missing_hint=1
@@ -56,14 +49,14 @@ fi
 [ "$missing_hint" -eq 0 ] && echo "  系统依赖检查通过 ✓"
 
 # ── 2. 创建目录 ───────────────────────────────────────────────
-echo "[2/6] 创建项目目录..."
+echo "[2/5] 创建项目目录..."
 mkdir -p "$BACKEND_DIR/uploads"
 mkdir -p "$FRONTEND_DIR"
 mkdir -p "$SYSTEM_DIR/logs"   # nginx 日志目录（可选 nginx 使用）
 echo "  目录创建完成 ✓"
 
 # ── 3. 同步代码 ───────────────────────────────────────────────
-echo "[3/6] 同步代码文件..."
+echo "[3/5] 同步代码文件..."
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "$(realpath "$SCRIPT_DIR")" = "$(realpath "$SYSTEM_DIR")" ]; then
     echo "  检测到原地部署（脚本已在 $SYSTEM_DIR 中），跳过文件复制。"
@@ -75,7 +68,7 @@ chmod 755 "$BACKEND_DIR/uploads"
 echo "  代码同步完成 ✓"
 
 # ── 4. Conda 环境 & 依赖 ──────────────────────────────────────
-echo "[4/6] 配置 Conda 环境（关闭代理）..."
+echo "[4/5] 配置 Conda 环境（关闭代理）..."
 
 # 禁用代理，避免无代理网络时请求超时
 "$CONDA_BIN" config --set proxy_servers.http  "" 2>/dev/null || true
@@ -98,34 +91,8 @@ fi
 
 echo "  Conda 环境配置完成 ✓  Python：$CONDA_PYTHON"
 
-# ── 5. 数据库初始化 ───────────────────────────────────────────
-echo "[5/6] 初始化数据库（MySQL 需已由管理员安装并运行）..."
-if ! command -v mysql &>/dev/null; then
-    echo "  [跳过] mysql 客户端未找到，跳过数据库检查。"
-    echo "  请联系管理员依次执行："
-    echo "    1. mysql -u root -p < $SCRIPT_DIR/database/schema.sql"
-    echo "    2. mysql -u root -p < $SCRIPT_DIR/deploy/db_admin_setup.sql"
-elif MYSQL_PWD="$DB_PASSWORD" mysql -u "$DB_USER" -h "$DB_HOST" -P "$DB_PORT" \
-         -e "SELECT 1" "$DB_NAME" >/dev/null 2>&1; then
-    echo "  数据库连接正常，跳过重复初始化 ✓"
-else
-    echo "  [提示] 无法以用户 '$DB_USER' 连接数据库 '$DB_NAME'。"
-    echo ""
-    echo "  ── 请联系管理员执行以下命令（需 MySQL root 权限）──"
-    echo "    步骤 1：建库建表（首次部署）"
-    echo "      mysql -u root -p < $SCRIPT_DIR/database/schema.sql"
-    echo "    步骤 2：创建应用用户并授权"
-    echo "      mysql -u root -p < $SCRIPT_DIR/deploy/db_admin_setup.sql"
-    echo "  ─────────────────────────────────────────────────────"
-    echo ""
-    echo "  若管理员使用了自定义密码，请以如下方式重新运行部署脚本："
-    echo "    DB_PASSWORD=<实际密码> bash deploy/start.sh"
-    echo ""
-    echo "  数据库配置完成前，应用将无法正常登录。"
-fi
-
-# ── 6. 用户级 systemd 服务 ────────────────────────────────────
-echo "[6/6] 创建用户级 systemd 服务（无需 sudo）..."
+# ── 5. 用户级 systemd 服务 ────────────────────────────────────
+echo "[5/5] 创建用户级 systemd 服务（无需 sudo）..."
 mkdir -p "$USER_SYSTEMD_DIR"
 
 cat > "$SERVICE_FILE" <<EOF
@@ -140,11 +107,6 @@ ExecStart=$CONDA_PYTHON $BACKEND_DIR/app.py
 Restart=always
 RestartSec=5
 Environment="PYTHONUNBUFFERED=1"
-Environment="DB_HOST=$DB_HOST"
-Environment="DB_PORT=$DB_PORT"
-Environment="DB_USER=$DB_USER"
-Environment="DB_PASSWORD=$DB_PASSWORD"
-Environment="DB_NAME=$DB_NAME"
 
 [Install]
 WantedBy=default.target

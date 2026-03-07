@@ -48,7 +48,8 @@ C3F/
 > **环境说明**
 > - Conda 安装路径：`/home/szh/anaconda3`
 > - 项目部署路径：`/home/szh/system/C3F`
-> - 不需要 `sudo` 权限
+> - 不需要 `sudo` 权限，**不需要 MySQL**
+> - 数据库使用 SQLite（内置于 Python，无需安装任何数据库服务）
 > - 服务器无法使用代理
 > - 后端通过用户级 systemd 管理，前端由 Flask 直接托管（无需 Nginx）
 > - 访问端口：**5000**
@@ -70,40 +71,22 @@ chmod +x deploy/start.sh
 bash deploy/start.sh
 ```
 
-脚本自动完成：目录创建 → Conda 环境创建（禁用代理）→ 数据库初始化 → 用户级 systemd 服务注册并启动。
+脚本自动完成：目录创建 → Conda 环境创建（禁用代理）→ 用户级 systemd 服务注册并启动。  
+**数据库无需任何配置**：应用首次启动时自动创建 SQLite 文件 `backend/c3f.db` 并写入初始账号。
 
 > **注**：如需系统重启后服务自动恢复（注销后保持运行），
 > 需请管理员执行一次：`loginctl enable-linger szh`
 
 ### 3. 手动部署（分步）
 
-#### 数据库（MySQL 需已由管理员安装并运行）
+#### 数据库
 
-> **无 root 权限说明**：数据库的创建和用户授权需要管理员（有 MySQL root 权限）执行一次。之后应用使用专用账号 `c3f_user` 连接，无需 root。
-
-**请联系管理员执行以下两步：**
+无需任何配置。SQLite 数据库文件（`backend/c3f.db`）在 Flask 后端**首次启动时自动创建**，  
+默认账号也会自动写入。若需自定义 DB 文件路径：
 
 ```bash
-# 步骤 1：建库、建表、写入初始数据
-mysql -u root -p < database/schema.sql
-
-# 步骤 2：创建应用专用数据库账号并授权
-mysql -u root -p < deploy/db_admin_setup.sql
+DB_PATH=/path/to/custom.db /home/szh/anaconda3/envs/c3f/bin/python backend/app.py
 ```
-
-> `db_admin_setup.sql` 默认创建账号 `c3f_user`，密码 `c3f_pass`。
-> 管理员可修改 `deploy/db_admin_setup.sql` 中的密码后执行；若修改了密码，需在启动时指定：
-> ```bash
-> DB_PASSWORD=自定义密码 bash deploy/start.sh
-> ```
-
-**排查登录报"服务器错误"**
-
-| 现象 | 原因 | 解决 |
-|------|------|------|
-| `Can't connect to MySQL server on 'localhost' (Connection refused)` | MySQL 服务未运行 | 联系管理员：`sudo systemctl start mysql` |
-| `Access denied for user 'c3f_user'@'localhost'` | 用户未创建或密码错误 | 管理员重新执行 `deploy/db_admin_setup.sql` |
-| `Unknown database 'c3f_db'` | 数据库未初始化 | 管理员执行 `database/schema.sql` |
 
 #### 创建 Conda 环境（禁用代理）
 
@@ -175,8 +158,8 @@ sudo nginx -t && sudo systemctl reload nginx
 | 后端 | Python 3 + Flask + Flask-CORS |
 | OCR | EasyOCR（自然场景文字识别） |
 | 语种检测 | langdetect |
-| 数据库 | MySQL 8 |
-| Web 服务器 | Nginx（反向代理） |
+| 数据库 | SQLite 3（内置于 Python，无需安装，自动创建） |
+| Web 服务器 | Nginx（反向代理，可选） |
 | 部署环境 | Ubuntu Linux + Conda（/home/szh/anaconda3）+ 用户级 systemd |
 
 ---

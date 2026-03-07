@@ -9,10 +9,9 @@ import uuid
 import hashlib
 import json
 import logging
+import sqlite3
 from datetime import datetime, date
 
-import pymysql
-import pymysql.cursors
 from flask import Flask, request, jsonify, session, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
@@ -31,6 +30,9 @@ app.config['UPLOAD_FOLDER'] = config.UPLOAD_FOLDER
 CORS(app, supports_credentials=True, origins='*')
 
 os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
+# init_db() uses CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE, so it is fully
+# idempotent and safe to call on every worker startup or concurrent invocation.
+init_db()
 
 # ── OCR 依赖（可选）────────────────────────────────────────────
 _ocr_reader = None
@@ -98,9 +100,87 @@ def get_lang_name(code):
 
 # ── 数据库 ─────────────────────────────────────────────────────
 def get_db():
-    cfg = dict(config.DB_CONFIG)
-    cfg['cursorclass'] = pymysql.cursors.DictCursor
-    return pymysql.connect(**cfg)
+    """Return a per-request SQLite connection with dict-style row factory.
+    Each call creates a new connection, so no cross-thread sharing occurs."""
+    conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
+    conn.row_factory = lambda c, r: dict(zip([col[0] for col in c.description], r))
+    conn.execute('PRAGMA foreign_keys = ON')
+    return conn
+
+def init_db():
+    """Create tables and seed initial data (idempotent)."""
+    conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
+    cur = conn.cursor()
+    cur.executescript('''
+        PRAGMA foreign_keys = ON;
+
+        CREATE TABLE IF NOT EXISTS users (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            username    TEXT    NOT NULL UNIQUE,
+            password    TEXT    NOT NULL,
+            email       TEXT    DEFAULT NULL,
+            role        TEXT    NOT NULL DEFAULT 'user',
+            avatar      TEXT    DEFAULT NULL,
+            is_active   INTEGER NOT NULL DEFAULT 1,
+            last_login  TEXT    DEFAULT NULL,
+            created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+
+        CREATE TABLE IF NOT EXISTS records (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id             INTEGER NOT NULL,
+            filename            TEXT    NOT NULL,
+            original_filename   TEXT    DEFAULT NULL,
+            file_size           INTEGER DEFAULT NULL,
+            detected_language   TEXT    DEFAULT NULL,
+            language_name       TEXT    DEFAULT NULL,
+            language_name_en    TEXT    DEFAULT NULL,
+            confidence          REAL    DEFAULT 0,
+            detected_text       TEXT    DEFAULT NULL,
+            all_languages       TEXT    DEFAULT NULL,
+            status              TEXT    NOT NULL DEFAULT 'success',
+            error_msg           TEXT    DEFAULT NULL,
+            created_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS system_config (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            config_key  TEXT    NOT NULL UNIQUE,
+            config_val  TEXT    DEFAULT NULL,
+            description TEXT    DEFAULT NULL,
+            updated_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+    ''')
+
+    # Seed users (INSERT OR IGNORE = safe to run multiple times)
+    admin_pw = hashlib.md5('admin123'.encode()).hexdigest()
+    user_pw  = hashlib.md5('user123'.encode()).hexdigest()
+    cur.execute(
+        "INSERT OR IGNORE INTO users (username, password, email, role) VALUES (?,?,?,?)",
+        ('admin', admin_pw, 'admin@c3f.local', 'admin')
+    )
+    cur.execute(
+        "INSERT OR IGNORE INTO users (username, password, email, role) VALUES (?,?,?,?)",
+        ('user1', user_pw, 'user1@c3f.local', 'user')
+    )
+
+    # Seed system config
+    for key, val, desc in [
+        ('max_file_size_mb', '16',   '最大上传文件大小(MB)'),
+        ('allowed_types',    'jpg,jpeg,png,bmp,gif,webp,tiff', '允许的图片类型'),
+        ('ocr_engine',       'easyocr', 'OCR引擎'),
+        ('site_name',        '自然场景文种识别系统', '网站名称'),
+    ]:
+        cur.execute(
+            "INSERT OR IGNORE INTO system_config (config_key, config_val, description) VALUES (?,?,?)",
+            (key, val, desc)
+        )
+
+    conn.commit()
+    conn.close()
+    logger.info('Database initialized ✓  path: %s', config.DB_PATH)
 
 # ── 工具函数 ───────────────────────────────────────────────────
 def md5(s: str) -> str:
@@ -135,21 +215,23 @@ def login():
 
     try:
         conn = get_db()
-        with conn.cursor() as cur:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, username, role FROM users '
+            'WHERE username=? AND password=? AND is_active=1',
+            (username, md5(password))
+        )
+        user = cur.fetchone()
+        if user:
             cur.execute(
-                'SELECT id, username, role FROM users '
-                'WHERE username=%s AND password=%s AND is_active=1',
-                (username, md5(password))
+                "UPDATE users SET last_login=datetime('now','localtime') WHERE id=?",
+                (user['id'],)
             )
-            user = cur.fetchone()
-            if user:
-                cur.execute('UPDATE users SET last_login=NOW() WHERE id=%s', (user['id'],))
-                conn.commit()
+            conn.commit()
         conn.close()
     except Exception as e:
         logger.error(f'Login DB error: {e}')
-        msg = '数据库连接失败，请联系管理员确认 MySQL 服务已启动并完成数据库初始化'
-        return jsonify({'success': False, 'message': msg}), 500
+        return jsonify({'success': False, 'message': '数据库错误，请稍后重试'}), 500
 
     if not user:
         return jsonify({'success': False, 'message': '用户名或密码错误'}), 401
@@ -184,44 +266,44 @@ def get_stats():
     uid, _, role = current_user()
     try:
         conn = get_db()
-        with conn.cursor() as cur:
-            # 总识别次数
-            q_total = 'SELECT COUNT(*) AS cnt FROM records'
-            q_today = "SELECT COUNT(*) AS cnt FROM records WHERE DATE(created_at)=CURDATE()"
-            q_lang  = 'SELECT COUNT(DISTINCT detected_language) AS cnt FROM records'
-            q_week  = (
-                "SELECT DATE(created_at) AS day, COUNT(*) AS cnt "
-                "FROM records WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) "
-                "GROUP BY day ORDER BY day"
-            )
-            q_dist  = (
-                "SELECT language_name, COUNT(*) AS cnt FROM records "
-                "WHERE language_name IS NOT NULL "
-                "GROUP BY language_name ORDER BY cnt DESC LIMIT 8"
-            )
-            q_recent = (
-                "SELECT r.id, r.original_filename, r.language_name, r.confidence, "
-                "r.created_at, u.username "
-                "FROM records r JOIN users u ON r.user_id=u.id "
-                "ORDER BY r.created_at DESC LIMIT 5"
-            )
-            if role != 'admin':
-                q_total  = q_total  + ' WHERE user_id=%s'
-                q_today  = q_today  + ' AND user_id=%s'
-                q_lang   = q_lang   + ' WHERE user_id=%s'
-                q_week   = q_week.replace('WHERE created_at', 'WHERE user_id=%s AND created_at')
-                q_dist   = q_dist.replace('WHERE language_name', 'WHERE user_id=%s AND language_name')
-                q_recent = q_recent.replace('ORDER BY r.created_at', 'WHERE r.user_id=%s ORDER BY r.created_at')
-                args = (uid,)
-            else:
-                args = ()
+        cur = conn.cursor()
+        # 总识别次数
+        q_total = 'SELECT COUNT(*) AS cnt FROM records'
+        q_today = "SELECT COUNT(*) AS cnt FROM records WHERE date(created_at)=date('now','localtime')"
+        q_lang  = 'SELECT COUNT(DISTINCT detected_language) AS cnt FROM records'
+        q_week  = (
+            "SELECT date(created_at) AS day, COUNT(*) AS cnt "
+            "FROM records WHERE date(created_at) >= date('now','-6 days','localtime') "
+            "GROUP BY day ORDER BY day"
+        )
+        q_dist  = (
+            "SELECT language_name, COUNT(*) AS cnt FROM records "
+            "WHERE language_name IS NOT NULL "
+            "GROUP BY language_name ORDER BY cnt DESC LIMIT 8"
+        )
+        q_recent = (
+            "SELECT r.id, r.original_filename, r.language_name, r.confidence, "
+            "r.created_at, u.username "
+            "FROM records r JOIN users u ON r.user_id=u.id "
+            "ORDER BY r.created_at DESC LIMIT 5"
+        )
+        if role != 'admin':
+            q_total  = q_total  + ' WHERE user_id=?'
+            q_today  = q_today  + ' AND user_id=?'
+            q_lang   = q_lang   + ' WHERE user_id=?'
+            q_week   = q_week.replace("WHERE date(created_at)", "WHERE user_id=? AND date(created_at)")
+            q_dist   = q_dist.replace('WHERE language_name', 'WHERE user_id=? AND language_name')
+            q_recent = q_recent.replace('ORDER BY r.created_at', 'WHERE r.user_id=? ORDER BY r.created_at')
+            args = (uid,)
+        else:
+            args = ()
 
-            cur.execute(q_total, args);  total  = cur.fetchone()['cnt']
-            cur.execute(q_today, args);  today  = cur.fetchone()['cnt']
-            cur.execute(q_lang,  args);  langs  = cur.fetchone()['cnt']
-            cur.execute(q_week,  args);  week   = cur.fetchall()
-            cur.execute(q_dist,  args);  dist   = cur.fetchall()
-            cur.execute(q_recent,args);  recent = cur.fetchall()
+        cur.execute(q_total, args);  total  = cur.fetchone()['cnt']
+        cur.execute(q_today, args);  today  = cur.fetchone()['cnt']
+        cur.execute(q_lang,  args);  langs  = cur.fetchone()['cnt']
+        cur.execute(q_week,  args);  week   = cur.fetchall()
+        cur.execute(q_dist,  args);  dist   = cur.fetchall()
+        cur.execute(q_recent,args);  recent = cur.fetchall()
         conn.close()
 
         # 序列化日期
@@ -332,20 +414,20 @@ def recognize():
     # 写入数据库
     try:
         conn = get_db()
-        with conn.cursor() as cur:
-            cur.execute(
-                '''INSERT INTO records
-                   (user_id, filename, original_filename, file_size,
-                    detected_language, language_name, language_name_en,
-                    confidence, detected_text, all_languages, status)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'success')''',
-                (uid, stored, f.filename, file_size,
-                 lang_code, zh_name, en_name,
-                 confidence, detected_text,
-                 json.dumps(all_langs, ensure_ascii=False))
-            )
-            record_id = cur.lastrowid
-            conn.commit()
+        cur = conn.cursor()
+        cur.execute(
+            '''INSERT INTO records
+               (user_id, filename, original_filename, file_size,
+                detected_language, language_name, language_name_en,
+                confidence, detected_text, all_languages, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,'success')''',
+            (uid, stored, f.filename, file_size,
+             lang_code, zh_name, en_name,
+             confidence, detected_text,
+             json.dumps(all_langs, ensure_ascii=False))
+        )
+        record_id = cur.lastrowid
+        conn.commit()
         conn.close()
     except Exception as e:
         logger.error(f'DB insert error: {e}')
@@ -382,34 +464,34 @@ def get_history():
     where_parts = []
     params      = []
     if role != 'admin':
-        where_parts.append('r.user_id=%s');  params.append(uid)
+        where_parts.append('r.user_id=?');  params.append(uid)
     if search:
-        where_parts.append('(r.original_filename LIKE %s OR r.detected_text LIKE %s)')
+        where_parts.append('(r.original_filename LIKE ? OR r.detected_text LIKE ?)')
         params += [f'%{search}%', f'%{search}%']
     if language:
-        where_parts.append('r.detected_language=%s');  params.append(language)
+        where_parts.append('r.detected_language=?');  params.append(language)
 
     where_sql = ('WHERE ' + ' AND '.join(where_parts)) if where_parts else ''
 
     try:
         conn = get_db()
-        with conn.cursor() as cur:
-            cur.execute(
-                f'SELECT COUNT(*) AS cnt FROM records r {where_sql}', params
-            )
-            total = cur.fetchone()['cnt']
+        cur = conn.cursor()
+        cur.execute(
+            f'SELECT COUNT(*) AS cnt FROM records r {where_sql}', params
+        )
+        total = cur.fetchone()['cnt']
 
-            cur.execute(
-                f'''SELECT r.id, r.filename, r.original_filename, r.file_size,
-                           r.detected_language, r.language_name, r.confidence,
-                           r.detected_text, r.status, r.created_at, u.username
-                    FROM records r JOIN users u ON r.user_id=u.id
-                    {where_sql}
-                    ORDER BY r.created_at DESC
-                    LIMIT %s OFFSET %s''',
-                params + [per_page, offset]
-            )
-            rows = cur.fetchall()
+        cur.execute(
+            f'''SELECT r.id, r.filename, r.original_filename, r.file_size,
+                       r.detected_language, r.language_name, r.confidence,
+                       r.detected_text, r.status, r.created_at, u.username
+                FROM records r JOIN users u ON r.user_id=u.id
+                {where_sql}
+                ORDER BY r.created_at DESC
+                LIMIT ? OFFSET ?''',
+            params + [per_page, offset]
+        )
+        rows = cur.fetchall()
         conn.close()
 
         for row in rows:
@@ -434,22 +516,22 @@ def delete_record(record_id):
     uid, _, role = current_user()
     try:
         conn = get_db()
-        with conn.cursor() as cur:
-            if role == 'admin':
-                cur.execute('SELECT filename FROM records WHERE id=%s', (record_id,))
-            else:
-                cur.execute('SELECT filename FROM records WHERE id=%s AND user_id=%s',
-                            (record_id, uid))
-            row = cur.fetchone()
-            if not row:
-                conn.close()
-                return jsonify({'success': False, 'message': '记录不存在'}), 404
-            # 删除文件
-            fp = os.path.join(config.UPLOAD_FOLDER, row['filename'])
-            if os.path.exists(fp):
-                os.remove(fp)
-            cur.execute('DELETE FROM records WHERE id=%s', (record_id,))
-            conn.commit()
+        cur = conn.cursor()
+        if role == 'admin':
+            cur.execute('SELECT filename FROM records WHERE id=?', (record_id,))
+        else:
+            cur.execute('SELECT filename FROM records WHERE id=? AND user_id=?',
+                        (record_id, uid))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({'success': False, 'message': '记录不存在'}), 404
+        # 删除文件
+        fp = os.path.join(config.UPLOAD_FOLDER, row['filename'])
+        if os.path.exists(fp):
+            os.remove(fp)
+        cur.execute('DELETE FROM records WHERE id=?', (record_id,))
+        conn.commit()
         conn.close()
         return jsonify({'success': True})
     except Exception as e:
@@ -463,12 +545,12 @@ def get_profile():
     uid, _, _ = current_user()
     try:
         conn = get_db()
-        with conn.cursor() as cur:
-            cur.execute(
-                'SELECT id, username, email, role, created_at, last_login FROM users WHERE id=%s',
-                (uid,)
-            )
-            user = cur.fetchone()
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, username, email, role, created_at, last_login FROM users WHERE id=?',
+            (uid,)
+        )
+        user = cur.fetchone()
         conn.close()
         if user:
             user['created_at']  = str(user['created_at'])
@@ -489,18 +571,18 @@ def update_profile():
 
     try:
         conn = get_db()
-        with conn.cursor() as cur:
-            if new_pw:
-                cur.execute('SELECT password FROM users WHERE id=%s', (uid,))
-                row = cur.fetchone()
-                if row['password'] != md5(old_pw):
-                    conn.close()
-                    return jsonify({'success': False, 'message': '原密码错误'}), 400
-                cur.execute('UPDATE users SET password=%s, email=%s WHERE id=%s',
-                            (md5(new_pw), email, uid))
-            else:
-                cur.execute('UPDATE users SET email=%s WHERE id=%s', (email, uid))
-            conn.commit()
+        cur = conn.cursor()
+        if new_pw:
+            cur.execute('SELECT password FROM users WHERE id=?', (uid,))
+            row = cur.fetchone()
+            if row['password'] != md5(old_pw):
+                conn.close()
+                return jsonify({'success': False, 'message': '原密码错误'}), 400
+            cur.execute('UPDATE users SET password=?, email=? WHERE id=?',
+                        (md5(new_pw), email, uid))
+        else:
+            cur.execute('UPDATE users SET email=? WHERE id=?', (email, uid))
+        conn.commit()
         conn.close()
         return jsonify({'success': True, 'message': '更新成功'})
     except Exception as e:
@@ -515,11 +597,11 @@ def list_users():
         return jsonify({'success': False, 'message': '权限不足'}), 403
     try:
         conn = get_db()
-        with conn.cursor() as cur:
-            cur.execute(
-                'SELECT id, username, email, role, is_active, created_at, last_login FROM users'
-            )
-            users = cur.fetchall()
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, username, email, role, is_active, created_at, last_login FROM users'
+        )
+        users = cur.fetchall()
         conn.close()
         for u in users:
             u['created_at'] = str(u['created_at'])
@@ -544,13 +626,13 @@ def create_user():
         return jsonify({'success': False, 'message': '用户名和密码不能为空'}), 400
     try:
         conn = get_db()
-        with conn.cursor() as cur:
-            cur.execute('INSERT INTO users (username, password, email, role) VALUES (%s,%s,%s,%s)',
-                        (username, md5(password), email, u_role))
-            conn.commit()
+        cur = conn.cursor()
+        cur.execute('INSERT INTO users (username, password, email, role) VALUES (?,?,?,?)',
+                    (username, md5(password), email, u_role))
+        conn.commit()
         conn.close()
         return jsonify({'success': True, 'message': '创建成功'})
-    except pymysql.err.IntegrityError:
+    except sqlite3.IntegrityError:
         return jsonify({'success': False, 'message': '用户名已存在'}), 409
     except Exception as e:
         logger.error(f'Create user error: {e}')
@@ -567,16 +649,16 @@ def update_user(user_id):
     u_role    = data.get('role')
     try:
         conn = get_db()
-        with conn.cursor() as cur:
-            if is_active is not None and u_role:
-                cur.execute('UPDATE users SET is_active=%s, role=%s WHERE id=%s',
-                            (1 if is_active else 0, u_role, user_id))
-            elif is_active is not None:
-                cur.execute('UPDATE users SET is_active=%s WHERE id=%s',
-                            (1 if is_active else 0, user_id))
-            elif u_role:
-                cur.execute('UPDATE users SET role=%s WHERE id=%s', (u_role, user_id))
-            conn.commit()
+        cur = conn.cursor()
+        if is_active is not None and u_role:
+            cur.execute('UPDATE users SET is_active=?, role=? WHERE id=?',
+                        (1 if is_active else 0, u_role, user_id))
+        elif is_active is not None:
+            cur.execute('UPDATE users SET is_active=? WHERE id=?',
+                        (1 if is_active else 0, user_id))
+        elif u_role:
+            cur.execute('UPDATE users SET role=? WHERE id=?', (u_role, user_id))
+        conn.commit()
         conn.close()
         return jsonify({'success': True})
     except Exception as e:
@@ -593,9 +675,9 @@ def delete_user(user_id):
         return jsonify({'success': False, 'message': '不能删除自己'}), 400
     try:
         conn = get_db()
-        with conn.cursor() as cur:
-            cur.execute('DELETE FROM users WHERE id=%s', (user_id,))
-            conn.commit()
+        cur = conn.cursor()
+        cur.execute('DELETE FROM users WHERE id=?', (user_id,))
+        conn.commit()
         conn.close()
         return jsonify({'success': True})
     except Exception as e:

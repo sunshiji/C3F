@@ -105,7 +105,7 @@ if ! command -v mysql &>/dev/null; then
     echo "  请联系管理员依次执行："
     echo "    1. mysql -u root -p < $SCRIPT_DIR/database/schema.sql"
     echo "    2. mysql -u root -p < $SCRIPT_DIR/deploy/db_admin_setup.sql"
-elif mysql -u "$DB_USER" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" \
+elif MYSQL_PWD="$DB_PASSWORD" mysql -u "$DB_USER" -h "$DB_HOST" -P "$DB_PORT" \
          -e "SELECT 1" "$DB_NAME" >/dev/null 2>&1; then
     echo "  数据库连接正常，跳过重复初始化 ✓"
 else

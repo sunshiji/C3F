@@ -89,6 +89,12 @@ fi
     --no-proxy \
     -r "$BACKEND_DIR/requirements.txt" -q
 
+# 移除已不再需要的包（从 MySQL 切换到 SQLite 后删除 PyMySQL）
+# pip install 只会增量安装，不会自动卸载已删除的依赖，所以需要显式卸载
+"$CONDA_BASE/envs/$CONDA_ENV/bin/pip" uninstall -y pymysql 2>/dev/null \
+    && echo "  已卸载旧依赖 PyMySQL ✓" \
+    || echo "  PyMySQL 未安装，无需卸载 ✓"
+
 echo "  Conda 环境配置完成 ✓  Python：$CONDA_PYTHON"
 
 # ── 5. 用户级 systemd 服务 ────────────────────────────────────

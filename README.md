@@ -33,11 +33,12 @@ C3F/
 │   ├── config.py       # 配置文件
 │   └── requirements.txt
 ├── database/
-│   └── schema.sql      # MySQL 8 建表脚本
+│   └── schema.sql      # SQLite DDL 参考（应用启动时自动建表）
 └── deploy/
     ├── environment.yml     # Conda 环境定义
-    ├── nginx.conf          # Nginx 反向代理配置
+    ├── nginx.conf          # Nginx 反向代理配置（可选）
     ├── start.sh            # 一键部署脚本（Conda）
+    ├── update_env.sh       # 已有环境依赖更新脚本
     └── restart_backend.sh  # 后端快速重启脚本
 ```
 
@@ -77,7 +78,37 @@ bash deploy/start.sh
 > **注**：如需系统重启后服务自动恢复（注销后保持运行），
 > 需请管理员执行一次：`loginctl enable-linger szh`
 
-### 3. 手动部署（分步）
+### 3. 已有环境如何更新依赖（代码更新后）
+
+如果 Conda 环境 `c3f` **已经存在**，只需更新 pip 依赖，无需重建整个环境：
+
+```bash
+cd /home/szh/system/C3F
+
+# 先拉取最新代码
+git pull
+
+# 只更新 pip 依赖（自动卸载已删除的包、安装新包）
+bash deploy/update_env.sh
+
+# 重启服务
+systemctl --user restart c3f
+```
+
+> **说明**：`update_env.sh` 会：
+> 1. 卸载已从依赖列表中移除的旧包（如 PyMySQL）
+> 2. 用 `pip install -r requirements.txt` 安装/升级当前所需包
+>
+> `pip install -r requirements.txt` 只会**增量安装**，不会自动卸载已删除的依赖，
+> 所以需要 `update_env.sh` 来显式清理旧包。
+
+也可以只运行完整部署脚本，它也包含同样的清理逻辑：
+
+```bash
+bash deploy/start.sh
+```
+
+### 4. 手动部署（分步）
 
 #### 数据库
 

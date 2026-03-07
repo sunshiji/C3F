@@ -17,6 +17,13 @@ SYSTEM_DIR="/home/szh/system/C3F"
 BACKEND_DIR="$SYSTEM_DIR/backend"
 FRONTEND_DIR="$SYSTEM_DIR/frontend"
 
+# ── 数据库连接参数（可通过环境变量覆盖）─────────────────────────
+DB_HOST="${DB_HOST:-localhost}"
+DB_PORT="${DB_PORT:-3306}"
+DB_USER="${DB_USER:-c3f_user}"
+DB_PASSWORD="${DB_PASSWORD:-c3f_pass}"
+DB_NAME="${DB_NAME:-c3f_db}"
+
 USER_SYSTEMD_DIR="$HOME/.config/systemd/user"
 SERVICE_FILE="$USER_SYSTEMD_DIR/c3f.service"
 
@@ -93,10 +100,29 @@ echo "  Conda 环境配置完成 ✓  Python：$CONDA_PYTHON"
 
 # ── 5. 数据库初始化 ───────────────────────────────────────────
 echo "[5/6] 初始化数据库（MySQL 需已由管理员安装并运行）..."
-echo "请输入 MySQL root 密码（无密码直接回车）："
-mysql -u root -p < "$SCRIPT_DIR/database/schema.sql" || \
-  mysql -u root   < "$SCRIPT_DIR/database/schema.sql"
-echo "  数据库初始化完成 ✓"
+if ! command -v mysql &>/dev/null; then
+    echo "  [跳过] mysql 客户端未找到，跳过数据库检查。"
+    echo "  请联系管理员依次执行："
+    echo "    1. mysql -u root -p < $SCRIPT_DIR/database/schema.sql"
+    echo "    2. mysql -u root -p < $SCRIPT_DIR/deploy/db_admin_setup.sql"
+elif mysql -u "$DB_USER" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" \
+         -e "SELECT 1" "$DB_NAME" >/dev/null 2>&1; then
+    echo "  数据库连接正常，跳过重复初始化 ✓"
+else
+    echo "  [提示] 无法以用户 '$DB_USER' 连接数据库 '$DB_NAME'。"
+    echo ""
+    echo "  ── 请联系管理员执行以下命令（需 MySQL root 权限）──"
+    echo "    步骤 1：建库建表（首次部署）"
+    echo "      mysql -u root -p < $SCRIPT_DIR/database/schema.sql"
+    echo "    步骤 2：创建应用用户并授权"
+    echo "      mysql -u root -p < $SCRIPT_DIR/deploy/db_admin_setup.sql"
+    echo "  ─────────────────────────────────────────────────────"
+    echo ""
+    echo "  若管理员使用了自定义密码，请以如下方式重新运行部署脚本："
+    echo "    DB_PASSWORD=<实际密码> bash deploy/start.sh"
+    echo ""
+    echo "  数据库配置完成前，应用将无法正常登录。"
+fi
 
 # ── 6. 用户级 systemd 服务 ────────────────────────────────────
 echo "[6/6] 创建用户级 systemd 服务（无需 sudo）..."
@@ -114,6 +140,11 @@ ExecStart=$CONDA_PYTHON $BACKEND_DIR/app.py
 Restart=always
 RestartSec=5
 Environment="PYTHONUNBUFFERED=1"
+Environment="DB_HOST=$DB_HOST"
+Environment="DB_PORT=$DB_PORT"
+Environment="DB_USER=$DB_USER"
+Environment="DB_PASSWORD=$DB_PASSWORD"
+Environment="DB_NAME=$DB_NAME"
 
 [Install]
 WantedBy=default.target

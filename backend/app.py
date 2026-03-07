@@ -148,7 +148,8 @@ def login():
         conn.close()
     except Exception as e:
         logger.error(f'Login DB error: {e}')
-        return jsonify({'success': False, 'message': '服务器错误，请稍后重试'}), 500
+        msg = '数据库连接失败，请联系管理员确认 MySQL 服务已启动并完成数据库初始化'
+        return jsonify({'success': False, 'message': msg}), 500
 
     if not user:
         return jsonify({'success': False, 'message': '用户名或密码错误'}), 401

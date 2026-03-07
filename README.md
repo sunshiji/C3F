@@ -79,13 +79,31 @@ bash deploy/start.sh
 
 #### 数据库（MySQL 需已由管理员安装并运行）
 
+> **无 root 权限说明**：数据库的创建和用户授权需要管理员（有 MySQL root 权限）执行一次。之后应用使用专用账号 `c3f_user` 连接，无需 root。
+
+**请联系管理员执行以下两步：**
+
 ```bash
+# 步骤 1：建库、建表、写入初始数据
 mysql -u root -p < database/schema.sql
+
+# 步骤 2：创建应用专用数据库账号并授权
+mysql -u root -p < deploy/db_admin_setup.sql
 ```
 
-#### 修改数据库配置
+> `db_admin_setup.sql` 默认创建账号 `c3f_user`，密码 `c3f_pass`。
+> 管理员可修改 `deploy/db_admin_setup.sql` 中的密码后执行；若修改了密码，需在启动时指定：
+> ```bash
+> DB_PASSWORD=自定义密码 bash deploy/start.sh
+> ```
 
-编辑 `backend/config.py`，修改 `DB_CONFIG` 中的 `password` 为 MySQL root 密码。
+**排查登录报"服务器错误"**
+
+| 现象 | 原因 | 解决 |
+|------|------|------|
+| `Can't connect to MySQL server on 'localhost' (Connection refused)` | MySQL 服务未运行 | 联系管理员：`sudo systemctl start mysql` |
+| `Access denied for user 'c3f_user'@'localhost'` | 用户未创建或密码错误 | 管理员重新执行 `deploy/db_admin_setup.sql` |
+| `Unknown database 'c3f_db'` | 数据库未初始化 | 管理员执行 `database/schema.sql` |
 
 #### 创建 Conda 环境（禁用代理）
 

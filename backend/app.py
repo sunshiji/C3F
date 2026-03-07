@@ -30,9 +30,6 @@ app.config['UPLOAD_FOLDER'] = config.UPLOAD_FOLDER
 CORS(app, supports_credentials=True, origins='*')
 
 os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
-# init_db() uses CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE, so it is fully
-# idempotent and safe to call on every worker startup or concurrent invocation.
-init_db()
 
 # ── OCR 依赖（可选）────────────────────────────────────────────
 _ocr_reader = None
@@ -181,6 +178,10 @@ def init_db():
     conn.commit()
     conn.close()
     logger.info('Database initialized ✓  path: %s', config.DB_PATH)
+
+# init_db() uses CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE, so it is fully
+# idempotent and safe to call on every worker startup or concurrent invocation.
+init_db()
 
 # ── 工具函数 ───────────────────────────────────────────────────
 def md5(s: str) -> str:

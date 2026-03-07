@@ -606,6 +606,22 @@ def delete_user(user_id):
 def uploaded_file(filename):
     return send_from_directory(config.UPLOAD_FOLDER, filename)
 
+# ── 前端静态文件（当不使用 Nginx 时由 Flask 直接托管）──────────
+_FRONTEND_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '..', 'frontend')
+)
+
+@app.route('/')
+def frontend_index():
+    return send_from_directory(_FRONTEND_DIR, 'login.html')
+
+@app.route('/<path:filename>')
+def frontend_static(filename):
+    # Reject any path that attempts directory traversal
+    if '..' in filename:
+        return jsonify({'error': 'Not found'}), 404
+    return send_from_directory(_FRONTEND_DIR, filename)
+
 # ── 启动 ───────────────────────────────────────────────────────
 if __name__ == '__main__':
     app.run(host=config.HOST, port=config.PORT, debug=config.DEBUG)

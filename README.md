@@ -43,11 +43,15 @@ C3F/
 
 ---
 
-## 快速部署（Ubuntu 服务器，使用 Conda）
+## 快速部署（Ubuntu 服务器，无 sudo，使用 Conda）
 
-> **前提**：服务器已安装 Conda（Miniconda 或 Anaconda）。
-> 脚本会自动在 `~/miniconda3`、`~/anaconda3`、`/opt/miniconda3`、`/opt/anaconda3`、`/opt/conda`
-> 中搜索 Conda 安装目录。如果不在以上路径，请在运行前设置 `CONDA_BASE` 环境变量。
+> **环境说明**
+> - Conda 安装路径：`/home/szh/anaconda3`
+> - 项目部署路径：`/home/szh/system/C3F`
+> - 不需要 `sudo` 权限
+> - 服务器无法使用代理
+> - 后端通过用户级 systemd 管理，前端由 Flask 直接托管（无需 Nginx）
+> - 访问端口：**5000**
 
 ### 1. 克隆代码到服务器
 
@@ -66,17 +70,14 @@ chmod +x deploy/start.sh
 bash deploy/start.sh
 ```
 
-脚本自动完成：系统依赖安装 → Conda 环境创建（禁用代理）→ 数据库初始化 → Nginx 配置 → 启动后台服务。
+脚本自动完成：目录创建 → Conda 环境创建（禁用代理）→ 数据库初始化 → 用户级 systemd 服务注册并启动。
 
-如需显式指定 Conda 路径：
-
-```bash
-CONDA_BASE=/home/szh/miniconda3 bash deploy/start.sh
-```
+> **注**：如需系统重启后服务自动恢复（注销后保持运行），
+> 需请管理员执行一次：`loginctl enable-linger szh`
 
 ### 3. 手动部署（分步）
 
-#### 数据库
+#### 数据库（MySQL 需已由管理员安装并运行）
 
 ```bash
 mysql -u root -p < database/schema.sql
@@ -86,34 +87,45 @@ mysql -u root -p < database/schema.sql
 
 编辑 `backend/config.py`，修改 `DB_CONFIG` 中的 `password` 为 MySQL root 密码。
 
-#### 创建 Conda 环境
+#### 创建 Conda 环境（禁用代理）
 
 ```bash
-# 禁用代理（服务器无代理时必须设置，否则 conda 会尝试连接代理而超时）
-conda config --set proxy_servers.http  ""
-conda config --set proxy_servers.https ""
+# 禁用代理，避免无代理服务器时请求超时
+/home/szh/anaconda3/bin/conda config --set proxy_servers.http  ""
+/home/szh/anaconda3/bin/conda config --set proxy_servers.https ""
 
-# 创建环境
-conda env create -n c3f -f deploy/environment.yml
-```
+# 创建 conda 环境
+/home/szh/anaconda3/bin/conda env create -n c3f -f deploy/environment.yml --no-default-packages
 
-#### 安装 Python 依赖（pip，禁用代理）
-
-```bash
-~/miniconda3/envs/c3f/bin/pip install --no-proxy -r backend/requirements.txt
+# 安装 pip 依赖（禁用代理）
+/home/szh/anaconda3/envs/c3f/bin/pip install --no-proxy -r backend/requirements.txt
 ```
 
 #### 启动后端
 
 ```bash
-# 使用 conda 环境中的 python 直接运行（不需要 conda activate）
-~/miniconda3/envs/c3f/bin/python backend/app.py
+# 使用 conda 环境的 python 直接运行（不需要 conda activate）
+/home/szh/anaconda3/envs/c3f/bin/python backend/app.py
 ```
 
-#### 配置 Nginx
+#### 注册用户级 systemd 服务（无需 sudo）
 
 ```bash
-sudo cp deploy/nginx.conf /etc/nginx/sites-available/c3f
+mkdir -p ~/.config/systemd/user
+cp deploy/c3f.service.example ~/.config/systemd/user/c3f.service   # 参考 deploy/start.sh 中的模板
+systemctl --user daemon-reload
+systemctl --user enable c3f
+systemctl --user start c3f
+```
+
+#### （可选）通过 Nginx 代理到端口 80
+
+如需通过标准 80 端口对外提供服务，请联系管理员将 `deploy/nginx.conf` 应用到系统 nginx：
+
+```bash
+# 管理员执行：
+sudo cp /home/szh/system/C3F/deploy/nginx.conf /etc/nginx/sites-available/c3f
+# 将 nginx.conf 中的 listen 8080 改为 listen 80
 sudo ln -s /etc/nginx/sites-available/c3f /etc/nginx/sites-enabled/c3f
 sudo nginx -t && sudo systemctl reload nginx
 ```
@@ -124,9 +136,9 @@ sudo nginx -t && sudo systemctl reload nginx
 
 | 地址 | 说明 |
 |------|------|
-| `http://10.109.119.208/` | 网站入口（Windows 浏览器可直接访问） |
-| `http://10.109.119.208/login.html` | 登录页 |
-| `http://10.109.119.208/api/...` | 后端 API（Nginx 代理） |
+| `http://10.109.119.208:5000/` | 网站入口（Flask 直接托管） |
+| `http://10.109.119.208:5000/login.html` | 登录页 |
+| `http://10.109.119.208:5000/api/...` | 后端 API |
 
 **默认账号**
 
@@ -147,7 +159,7 @@ sudo nginx -t && sudo systemctl reload nginx
 | 语种检测 | langdetect |
 | 数据库 | MySQL 8 |
 | Web 服务器 | Nginx（反向代理） |
-| 部署环境 | Ubuntu Linux + Conda + Nginx + systemd |
+| 部署环境 | Ubuntu Linux + Conda（/home/szh/anaconda3）+ 用户级 systemd |
 
 ---
 

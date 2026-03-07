@@ -1,71 +1,72 @@
 #!/usr/bin/env bash
 # =============================================================
-# 自然场景文种识别系统 - 一键部署脚本
+# 自然场景文种识别系统 - 一键部署脚本（无 sudo 版）
 # 目标服务器：Ubuntu   用户：szh   路径：/home/szh/system/C3F
-# 环境管理：Conda（不使用代理）
+# 环境管理：Conda（/home/szh/anaconda3）无代理
+# 说明：全程不需要 sudo 权限；后端通过用户级 systemd 管理；
+#       前端由 Flask 直接托管，访问端口 5000。
 # =============================================================
 set -e
+
+CONDA_BASE="/home/szh/anaconda3"
+CONDA_ENV="c3f"
+CONDA_BIN="$CONDA_BASE/bin/conda"
+CONDA_PYTHON="$CONDA_BASE/envs/$CONDA_ENV/bin/python"
 
 SYSTEM_DIR="/home/szh/system/C3F"
 BACKEND_DIR="$SYSTEM_DIR/backend"
 FRONTEND_DIR="$SYSTEM_DIR/frontend"
-CONDA_ENV="c3f"
-NGINX_CONF="/etc/nginx/sites-available/c3f"
-NGINX_LINK="/etc/nginx/sites-enabled/c3f"
-SERVICE_FILE="/etc/systemd/system/c3f.service"
+
+USER_SYSTEMD_DIR="$HOME/.config/systemd/user"
+SERVICE_FILE="$USER_SYSTEMD_DIR/c3f.service"
 
 echo "================================================================"
-echo "  自然场景文种识别系统 - 部署脚本（Conda 版）"
+echo "  自然场景文种识别系统 - 部署脚本（无 sudo / Conda）"
 echo "================================================================"
 
-# ── 定位 conda 安装目录 ────────────────────────────────────────
-# 依次检查常见路径；也可通过环境变量 CONDA_BASE 覆盖
-if [ -z "$CONDA_BASE" ]; then
-    for _candidate in \
-        "$HOME/miniconda3" "$HOME/anaconda3" \
-        "/opt/miniconda3"  "/opt/anaconda3"  \
-        "/opt/conda"
-    do
-        if [ -f "$_candidate/bin/conda" ]; then
-            CONDA_BASE="$_candidate"
-            break
-        fi
-    done
-fi
-
-if [ -z "$CONDA_BASE" ]; then
-    echo "[错误] 未找到 conda，请将 conda 安装目录赋值给 CONDA_BASE 后重试。"
-    echo "  例如：CONDA_BASE=/home/szh/miniconda3 bash deploy/start.sh"
+# ── 前置检查 ──────────────────────────────────────────────────
+echo "[检查] 确认 conda 可用..."
+if [ ! -f "$CONDA_BIN" ]; then
+    echo "[错误] 未在 $CONDA_BASE 找到 conda，请检查安装路径。"
     exit 1
 fi
+echo "  conda：$CONDA_BIN ✓"
 
-CONDA_BIN="$CONDA_BASE/bin/conda"
-CONDA_PYTHON="$CONDA_BASE/envs/$CONDA_ENV/bin/python"
-echo "  使用 conda：$CONDA_BIN"
-
-# ── 1. 系统依赖（不含 python3-pip / python3-venv）─────────────
-echo "[1/8] 安装系统依赖..."
-sudo apt-get update -qq
-sudo apt-get install -y \
-     nginx mysql-server tesseract-ocr \
-     libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev
+# ── 1. 系统依赖提示（无 sudo，需管理员预装）──────────────────
+echo "[1/6] 系统依赖检查（本步骤不安装，仅提示）..."
+missing_hint=0
+for cmd in mysql tesseract; do
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "  [提示] 命令 '$cmd' 未找到，请联系管理员确认已安装对应软件包。"
+        missing_hint=1
+    fi
+done
+# 检查 libGL（EasyOCR/OpenCV 需要）
+if ! ldconfig -p 2>/dev/null | grep -q "libGL\.so"; then
+    echo "  [提示] 未检测到 libGL，若 OCR 功能异常请联系管理员安装 libgl1。"
+    missing_hint=1
+fi
+[ "$missing_hint" -eq 0 ] && echo "  系统依赖检查通过 ✓"
 
 # ── 2. 创建目录 ───────────────────────────────────────────────
-echo "[2/8] 创建项目目录..."
+echo "[2/6] 创建项目目录..."
 mkdir -p "$BACKEND_DIR/uploads"
 mkdir -p "$FRONTEND_DIR"
+mkdir -p "$SYSTEM_DIR/logs"   # nginx 日志目录（可选 nginx 使用）
+echo "  目录创建完成 ✓"
 
 # ── 3. 同步代码 ───────────────────────────────────────────────
-echo "[3/8] 同步代码文件..."
+echo "[3/6] 同步代码文件..."
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cp -r "$SCRIPT_DIR/backend/"*  "$BACKEND_DIR/"
 cp -r "$SCRIPT_DIR/frontend/"* "$FRONTEND_DIR/"
 chmod 755 "$BACKEND_DIR/uploads"
+echo "  代码同步完成 ✓"
 
 # ── 4. Conda 环境 & 依赖 ──────────────────────────────────────
-echo "[4/8] 配置 Conda 环境（关闭代理）..."
+echo "[4/6] 配置 Conda 环境（关闭代理）..."
 
-# 显式禁用 conda 代理，避免无代理服务器时请求超时
+# 禁用代理，避免无代理网络时请求超时
 "$CONDA_BIN" config --set proxy_servers.http  "" 2>/dev/null || true
 "$CONDA_BIN" config --set proxy_servers.https "" 2>/dev/null || true
 
@@ -79,38 +80,31 @@ else
         --no-default-packages
 fi
 
-# 在 conda 环境内通过 pip 安装时同样禁用代理
+# pip 安装时同样禁用代理
 "$CONDA_BASE/envs/$CONDA_ENV/bin/pip" install \
     --no-proxy \
     -r "$BACKEND_DIR/requirements.txt" -q
 
-echo "  Conda 环境配置完成，Python：$CONDA_PYTHON"
+echo "  Conda 环境配置完成 ✓  Python：$CONDA_PYTHON"
 
-# ── 5. 数据库 ─────────────────────────────────────────────────
-echo "[5/8] 初始化数据库..."
+# ── 5. 数据库初始化 ───────────────────────────────────────────
+echo "[5/6] 初始化数据库（MySQL 需已由管理员安装并运行）..."
 echo "请输入 MySQL root 密码（无密码直接回车）："
 mysql -u root -p < "$SCRIPT_DIR/database/schema.sql" || \
   mysql -u root   < "$SCRIPT_DIR/database/schema.sql"
-echo "  数据库初始化完成。"
+echo "  数据库初始化完成 ✓"
 
-# ── 6. Nginx ──────────────────────────────────────────────────
-echo "[6/8] 配置 Nginx..."
-sudo cp "$SCRIPT_DIR/deploy/nginx.conf" "$NGINX_CONF"
-sudo ln -sf "$NGINX_CONF" "$NGINX_LINK" 2>/dev/null || true
-sudo rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
-sudo nginx -t && sudo systemctl reload nginx
-echo "  Nginx 配置完成。"
+# ── 6. 用户级 systemd 服务 ────────────────────────────────────
+echo "[6/6] 创建用户级 systemd 服务（无需 sudo）..."
+mkdir -p "$USER_SYSTEMD_DIR"
 
-# ── 7. systemd 服务（使用 conda 环境的 python 绝对路径）────────
-echo "[7/8] 创建系统服务..."
-sudo tee "$SERVICE_FILE" > /dev/null <<EOF
+cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=C3F Natural Scene Language Recognition System
-After=network.target mysql.service
+After=network.target
 
 [Service]
 Type=simple
-User=szh
 WorkingDirectory=$BACKEND_DIR
 ExecStart=$CONDA_PYTHON $BACKEND_DIR/app.py
 Restart=always
@@ -118,23 +112,27 @@ RestartSec=5
 Environment="PYTHONUNBUFFERED=1"
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 EOF
 
-sudo systemctl daemon-reload
-sudo systemctl enable c3f
-sudo systemctl restart c3f
-echo "  服务启动完成。"
+systemctl --user daemon-reload
+systemctl --user enable c3f
+systemctl --user restart c3f
+echo "  用户服务启动完成 ✓"
 
-# ── 8. 完成 ───────────────────────────────────────────────────
-echo "[8/8] 部署完成！"
+# ── 完成 ──────────────────────────────────────────────────────
 echo ""
 echo "================================================================"
-echo "  访问地址：http://10.109.119.208/"
+echo "  部署完成！"
+echo ""
+echo "  访问地址：http://10.109.119.208:5000/"
 echo "  默认账号：admin / admin123"
 echo "  默认账号：user1 / user123"
+echo ""
+echo "  注：如需开机自动启动（注销后保持运行），请联系管理员执行："
+echo "      loginctl enable-linger szh"
 echo "================================================================"
 echo ""
-echo "服务状态查看：  sudo systemctl status c3f"
-echo "后端日志查看：  sudo journalctl -u c3f -f"
-echo "Nginx日志查看： sudo tail -f /var/log/nginx/c3f_access.log"
+echo "服务状态查看：  systemctl --user status c3f"
+echo "后端日志查看：  journalctl --user -u c3f -f"
+echo "快速重启：      bash $SYSTEM_DIR/deploy/restart_backend.sh"

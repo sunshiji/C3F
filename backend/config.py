@@ -30,6 +30,11 @@ OCR_LANGS = [l.strip() for l in
 # Default: None → EasyOCR uses ~/.EasyOCR/model/
 OCR_MODEL_DIR = os.environ.get('OCR_MODEL_DIR') or None
 
+# Use GPU for EasyOCR inference (significantly faster than CPU).
+# Requires a CUDA-capable GPU and the GPU build of PyTorch.
+# Set to "0" to fall back to CPU: OCR_USE_GPU=0 python app.py
+OCR_USE_GPU = os.environ.get('OCR_USE_GPU', '1').strip() not in ('0', 'false', 'no')
+
 # ── Upload limits ──────────────────────────────────────────────
 MAX_CONTENT_MB = 16
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff'}

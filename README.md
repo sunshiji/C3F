@@ -240,6 +240,36 @@ OCR_MODEL_DIR=/home/szh/system/C3F/ocr_models \
 > **注**：`OCR_LANGS` 中的每个语种都必须在 `OCR_MODEL_DIR` 中有对应的模型文件，否则仍会尝试下载。  
 > EasyOCR 支持语种完整列表：<https://www.jaided.ai/easyocr/>
 
+#### 5.5 GPU 推理（默认开启）
+
+系统默认开启 GPU 推理（`OCR_USE_GPU=1`），速度比 CPU 快 5–10 倍。  
+GPU 推理需要满足以下条件：
+
+- NVIDIA GPU（Pascal 架构或更新）
+- 已安装 CUDA Toolkit（推荐 11.x / 12.x）
+- PyTorch GPU 版本（`torch` 安装时包含 CUDA 支持）
+
+**验证 GPU 是否可用**
+
+```bash
+/home/szh/anaconda3/envs/c3f/bin/python -c "import torch; print(torch.cuda.is_available())"
+# 输出 True → GPU 推理正常
+# 输出 False → 请检查 CUDA 驱动或改用 CPU 模式
+```
+
+**无 GPU 时切换到 CPU 模式**
+
+```bash
+# 方法 A：临时运行
+OCR_USE_GPU=0 /home/szh/anaconda3/envs/c3f/bin/python backend/app.py
+
+# 方法 B：写入 systemd 服务文件（重启后生效）
+# 编辑 ~/.config/systemd/user/c3f.service，在 [Service] 节中添加：
+# Environment="OCR_USE_GPU=0"
+# 然后执行：
+systemctl --user daemon-reload && systemctl --user restart c3f
+```
+
 ---
 
 ## 访问

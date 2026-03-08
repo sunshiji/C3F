@@ -39,7 +39,7 @@ def get_ocr_reader():
     if _ocr_reader is None:
         try:
             import easyocr
-            kwargs = {'gpu': False, 'verbose': False}
+            kwargs = {'gpu': config.OCR_USE_GPU, 'verbose': False}
             if config.OCR_MODEL_DIR:
                 kwargs['model_storage_directory'] = config.OCR_MODEL_DIR
             _ocr_reader = easyocr.Reader(config.OCR_LANGS, **kwargs)

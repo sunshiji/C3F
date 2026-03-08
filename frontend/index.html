@@ -147,9 +147,9 @@
 
   // ── 鉴权 ──────────────────────────────────────────────────
   const userStr = localStorage.getItem('c3f_user');
-  if (!userStr) { window.location.href = 'login.html'; }
+  if (!userStr) { localStorage.removeItem('c3f_user'); window.location.href = 'login.html'; }
   const user = JSON.parse(userStr || '{}');
-  if (!user.user_id) { window.location.href = 'login.html'; }
+  if (!user.user_id) { localStorage.removeItem('c3f_user'); window.location.href = 'login.html'; }
 
   // 初始化用户信息
   document.getElementById('sidebarUsername').textContent = user.username || '用户';

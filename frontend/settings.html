@@ -243,7 +243,7 @@
   <script>
     const API = window.location.origin;
     const user = JSON.parse(localStorage.getItem('c3f_user') || 'null');
-    if (!user) { window.top.location.href = 'login.html'; }
+    if (!user) { localStorage.removeItem('c3f_user'); window.top.location.href = 'login.html'; }
 
     // 非管理员隐藏用户管理 tab
     if (user.role !== 'admin') {
@@ -265,7 +265,7 @@
     async function loadProfile() {
       try {
         const res = await fetch(`${API}/api/profile`, { credentials:'include' });
-        if (res.status === 401) { window.top.location.href = 'login.html'; return; }
+        if (res.status === 401) { localStorage.removeItem('c3f_user'); window.top.location.href = 'login.html'; return; }
         const d = await res.json();
         if (!d.success) return;
         const u = d.user;

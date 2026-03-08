@@ -211,7 +211,7 @@
     const API = window.location.origin;
 
     const user = JSON.parse(localStorage.getItem('c3f_user') || 'null');
-    if (!user) { window.top.location.href = 'login.html'; }
+    if (!user) { localStorage.removeItem('c3f_user'); window.top.location.href = 'login.html'; }
 
     // ── 支持语种列表 ─────────────────────────────────────────
     const SUPPORTED_LANGS = [
@@ -297,7 +297,7 @@
         const res = await fetch(`${API}/api/recognize`, {
           method: 'POST', body: fd, credentials: 'include'
         });
-        if (res.status === 401) { window.top.location.href = 'login.html'; return; }
+        if (res.status === 401) { localStorage.removeItem('c3f_user'); window.top.location.href = 'login.html'; return; }
         const d = await res.json();
         if (d.success) {
           renderResult(d);

@@ -119,7 +119,7 @@
 
     // 鉴权
     const user = JSON.parse(localStorage.getItem('c3f_user') || 'null');
-    if (!user) { window.top.location.href = 'login.html'; }
+    if (!user) { localStorage.removeItem('c3f_user'); window.top.location.href = 'login.html'; }
     document.getElementById('welcomeName').textContent = user?.username || '用户';
     document.getElementById('todayStr').textContent = new Date().toLocaleDateString('zh-CN', {year:'numeric',month:'long',day:'numeric'});
 
@@ -128,7 +128,7 @@
     async function loadStats() {
       try {
         const res = await fetch(`${API}/api/stats`, { credentials:'include' });
-        if (res.status === 401) { window.top.location.href = 'login.html'; return; }
+        if (res.status === 401) { localStorage.removeItem('c3f_user'); window.top.location.href = 'login.html'; return; }
         const d = await res.json();
 
         document.getElementById('statTotal').textContent = d.total ?? '-';

@@ -127,7 +127,7 @@
   <script>
     const API = window.location.origin;
     const user = JSON.parse(localStorage.getItem('c3f_user') || 'null');
-    if (!user) { window.top.location.href = 'login.html'; }
+    if (!user) { localStorage.removeItem('c3f_user'); window.top.location.href = 'login.html'; }
 
     let currentPage = 1;
     const perPage   = 10;
@@ -164,7 +164,7 @@
           page: currentPage, per_page: perPage, search, language
         });
         const res = await fetch(`${API}/api/history?${params}`, { credentials:'include' });
-        if (res.status === 401) { window.top.location.href = 'login.html'; return; }
+        if (res.status === 401) { localStorage.removeItem('c3f_user'); window.top.location.href = 'login.html'; return; }
         const d = await res.json();
         if (!d.success) throw new Error(d.message);
 

@@ -33,7 +33,7 @@ import sys
 # ── 默认值（与 config.py 保持一致）──────────────────────────────
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_MODEL_DIR = os.path.join(_SCRIPT_DIR, 'ocr_models')
-_DEFAULT_LANGS = 'ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,ta,kn,te'
+_DEFAULT_LANGS = 'ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,kn,te'
 
 # Import grouping logic from config.py to avoid duplicating the template list.
 sys.path.insert(0, _SCRIPT_DIR)
@@ -54,7 +54,7 @@ def parse_args():
     parser.add_argument(
         '--langs', '-l',
         default=os.environ.get('OCR_LANGS', _DEFAULT_LANGS),
-        help='逗号分隔的 EasyOCR 语种代码（默认：全部 13 个）',
+        help='逗号分隔的 EasyOCR 语种代码（默认：全部 12 个）',
     )
     parser.add_argument(
         '--gpu', action='store_true', default=False,

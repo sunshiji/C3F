@@ -18,7 +18,7 @@ DB_PATH = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'c3f.db'))
 # Reduce this list for faster startup; extend it for broader coverage.
 # Override via env: OCR_LANGS=ch_sim,en,ar python app.py
 # Full language list: https://www.jaided.ai/easyocr/
-_DEFAULT_OCR_LANGS = 'ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,ta,kn,te'
+_DEFAULT_OCR_LANGS = 'ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,kn,te'
 OCR_LANGS = [l.strip() for l in
              os.environ.get('OCR_LANGS', _DEFAULT_OCR_LANGS).split(',')
              if l.strip()]
@@ -29,15 +29,17 @@ OCR_LANGS = [l.strip() for l in
 # known-compatible languages; one Reader is created per active group.
 # Each template includes 'en' because most recognition networks require it.
 _LANG_GROUP_TEMPLATES = [
-    ['ch_sim', 'ch_tra', 'en', 'ja', 'ko'],   # CJK + Latin
-    ['ar', 'en'],                               # Arabic
-    ['hi', 'en'],                               # Devanagari (Hindi)
-    ['ru', 'en'],                               # Cyrillic (Russian)
-    ['th', 'en'],                               # Thai  — strict 2-lang limit
-    ['bn', 'en'],                               # Bengali
-    ['ta', 'en'],                               # Tamil
-    ['kn', 'en'],                               # Kannada
-    ['te', 'en'],                               # Telugu
+    ['ch_sim', 'en', 'ja', 'ko'],   # CJK Simplified + Japanese/Korean + Latin
+    ['ch_tra', 'en'],               # Chinese Traditional — strict 2-lang limit
+    ['ar', 'en'],                   # Arabic
+    ['hi', 'en'],                   # Devanagari (Hindi)
+    ['ru', 'en'],                   # Cyrillic (Russian)
+    ['th', 'en'],                   # Thai — strict 2-lang limit
+    ['bn', 'en'],                   # Bengali
+    ['kn', 'en'],                   # Kannada
+    ['te', 'en'],                   # Telugu
+    # 'ta' (Tamil) omitted: model checkpoint (143 classes) is incompatible
+    # with the current EasyOCR package (expects 127 classes).
 ]
 
 def _make_lang_groups(langs):

@@ -51,6 +51,7 @@ fi
 # ── 2. 创建目录 ───────────────────────────────────────────────
 echo "[2/5] 创建项目目录..."
 mkdir -p "$BACKEND_DIR/uploads"
+mkdir -p "$BACKEND_DIR/models"   # OCR 模型权重目录（.pth 文件存放处）
 mkdir -p "$FRONTEND_DIR"
 mkdir -p "$SYSTEM_DIR/logs"   # nginx 日志目录（可选 nginx 使用）
 echo "  目录创建完成 ✓"
@@ -131,6 +132,13 @@ echo ""
 echo "  访问地址：http://10.109.119.208:5000/"
 echo "  默认账号：admin / admin123"
 echo "  默认账号：user1 / user123"
+echo ""
+echo "  ── OCR 模型权重 ─────────────────────────────────────────"
+echo "  模型目录：$BACKEND_DIR/models/"
+echo "  若目录中尚无 .pth 文件，首次识别时会尝试联网下载。"
+echo "  如需提前下载（推荐在有网络时执行）："
+echo "    $CONDA_PYTHON $BACKEND_DIR/download_models.py"
+echo "  ─────────────────────────────────────────────────────────"
 echo ""
 echo "  注：如需开机自动启动（注销后保持运行），请联系管理员执行："
 echo "      loginctl enable-linger szh"

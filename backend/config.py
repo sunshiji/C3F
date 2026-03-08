@@ -13,33 +13,63 @@ UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
 #   DB_PATH=/path/to/c3f.db python app.py
 DB_PATH = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'c3f.db'))
 
-# ── EasyOCR ───────────────────────────────────────────────────
-# Comma-separated EasyOCR language codes loaded at startup.
-# Reduce this list for faster startup; extend it for broader coverage.
-# Override via env: OCR_LANGS=ch_sim,en,ar python app.py
-# Full language list: https://www.jaided.ai/easyocr/
-_DEFAULT_OCR_LANGS = 'ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,kn,te'
+# ── OCR 模型目录 ──────────────────────────────────────────────
+# 模型权重文件专用目录：backend/models/
+# 将 .pth 文件下载到此目录后，后端启动时直接读取，无需联网。
+# 下载方法：python backend/download_models.py
+# 覆盖路径：OCR_MODEL_DIR=/path/to/models python app.py
+MODELS_DIR = os.path.join(BASE_DIR, 'models')
+
+def _resolve_model_dir():
+    """Return the model storage directory to use.
+
+    Priority:
+    1. OCR_MODEL_DIR env var (explicit override)
+    2. backend/models/ — if the directory exists and contains at least one
+       .pth weight file (i.e. models have been pre-downloaded)
+    3. None  → EasyOCR falls back to ~/.EasyOCR/model/ and may download
+    """
+    env_dir = os.environ.get('OCR_MODEL_DIR', '').strip()
+    if env_dir:
+        return env_dir
+    if os.path.isdir(MODELS_DIR):
+        if any(f.endswith(('.pth', '.pt')) for f in os.listdir(MODELS_DIR)):
+            return MODELS_DIR
+    return None
+
+OCR_MODEL_DIR = _resolve_model_dir()
+
+# ── EasyOCR 语种列表 ───────────────────────────────────────────
+# EasyOCR 支持的语种代码（逗号分隔）。
+# 启动时加载的语种越多，占用内存越大；可按需裁剪。
+# 覆盖方式：OCR_LANGS=ch_sim,en,ar python app.py
+# 完整列表：https://www.jaided.ai/easyocr/
+#
+# 说明：下列语种 EasyOCR 暂无模型支持，系统改用 Unicode 字符范围检测：
+#   希腊文(el)、希伯来文(he)、柬埔寨/高棉文(km)、藏文(bo)、蒙古文(mn)、奥里亚文(or)
+_DEFAULT_OCR_LANGS = 'ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,kn,te,gu,pa,ta'
 OCR_LANGS = [l.strip() for l in
              os.environ.get('OCR_LANGS', _DEFAULT_OCR_LANGS).split(',')
              if l.strip()]
 
-# EasyOCR enforces per-script language compatibility: languages from
-# incompatible Unicode script families (e.g. Thai vs. CJK) cannot be
-# combined in a single Reader instance.  The templates below group
-# known-compatible languages; one Reader is created per active group.
-# Each template includes 'en' because most recognition networks require it.
+# EasyOCR 对不同 Unicode 字符集有兼容性限制，不同字符系的语种不能在同一
+# Reader 实例中混用。下表列出已验证的兼容分组，每组独立创建一个 Reader。
+# 每个分组都包含 'en'，因为大多数识别网络依赖英文基础权重。
 _LANG_GROUP_TEMPLATES = [
-    ['ch_sim', 'en', 'ja', 'ko'],   # CJK Simplified + Japanese/Korean + Latin
-    ['ch_tra', 'en'],               # Chinese Traditional — strict 2-lang limit
-    ['ar', 'en'],                   # Arabic
-    ['hi', 'en'],                   # Devanagari (Hindi)
-    ['ru', 'en'],                   # Cyrillic (Russian)
-    ['th', 'en'],                   # Thai — strict 2-lang limit
-    ['bn', 'en'],                   # Bengali
-    ['kn', 'en'],                   # Kannada
-    ['te', 'en'],                   # Telugu
-    # 'ta' (Tamil) omitted: model checkpoint (143 classes) is incompatible
-    # with the current EasyOCR package (expects 127 classes).
+    ['ch_sim', 'en', 'ja', 'ko'],   # CJK 简体 + 日文/韩文 + 拉丁
+    ['ch_tra', 'en'],               # 繁体中文 — 严格限制最多 2 种语言
+    ['ar',     'en'],               # 阿拉伯文
+    ['hi',     'en'],               # 天城体（印地语）
+    ['ru',     'en'],               # 西里尔字母（俄语）
+    ['th',     'en'],               # 泰文 — 严格限制最多 2 种语言
+    ['bn',     'en'],               # 孟加拉文
+    ['kn',     'en'],               # 卡纳达文
+    ['te',     'en'],               # 泰卢固文
+    ['gu',     'en'],               # 古吉拉特文
+    ['pa',     'en'],               # 旁遮普文（古鲁穆奇字母）
+    # 泰米尔文：EasyOCR 1.7.x 中 ta 的模型检查点输出类别数与包期望不一致，
+    # 加载失败时会被自动跳过，不影响其余语种的正常工作。
+    ['ta',     'en'],               # 泰米尔文
 ]
 
 def _make_lang_groups(langs):
@@ -65,16 +95,8 @@ def _make_lang_groups(langs):
 
 OCR_LANG_GROUPS = _make_lang_groups(OCR_LANGS)
 
-# Directory where EasyOCR reads model weight files.
-# Point this to a folder of pre-downloaded .pth files to avoid any
-# network access at startup.
-# Override via env: OCR_MODEL_DIR=/path/to/models python app.py
-# Default: None → EasyOCR uses ~/.EasyOCR/model/
-OCR_MODEL_DIR = os.environ.get('OCR_MODEL_DIR') or None
-
-# Use GPU for EasyOCR inference (significantly faster than CPU).
-# Requires a CUDA-capable GPU and the GPU build of PyTorch.
-# Set to "0" to fall back to CPU: OCR_USE_GPU=0 python app.py
+# GPU 推理开关（需要 CUDA 环境和 GPU 版 PyTorch）
+# 关闭：OCR_USE_GPU=0 python app.py
 OCR_USE_GPU = os.environ.get('OCR_USE_GPU', '1').strip() not in ('0', 'false', 'no')
 
 # ── Upload limits ──────────────────────────────────────────────

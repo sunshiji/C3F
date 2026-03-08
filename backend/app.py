@@ -32,31 +32,38 @@ CORS(app, supports_credentials=True, origins='*')
 os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
 
 # ── OCR 依赖（可选）────────────────────────────────────────────
-# One EasyOCR Reader per compatible language group.  Languages from
-# different Unicode script families (e.g. Thai vs. CJK) cannot share
-# a Reader; see config.OCR_LANG_GROUPS for the grouping logic.
+# Each EasyOCR Reader covers one script family (per-group compatibility
+# constraint).  Readers are created lazily on first use and cached.
 _ocr_readers = None   # list[easyocr.Reader] after first call, or []
 
 def get_ocr_readers():
     """Return the list of initialised EasyOCR Reader objects.
 
     Readers are created lazily on the first call and cached.  One Reader
-    is created per entry in config.OCR_LANG_GROUPS so that incompatible
-    script families never end up in the same Reader instance.
+    is created per entry in config.OCR_LANG_GROUPS.  Groups that fail to
+    load (e.g. a model checkpoint version mismatch) are silently skipped
+    so that all remaining groups continue to work.
+
+    Model weights are loaded from config.OCR_MODEL_DIR (backend/models/)
+    when that directory exists and contains .pth files.  Otherwise
+    EasyOCR falls back to ~/.EasyOCR/model/ and may attempt to download.
     """
     global _ocr_readers
     if _ocr_readers is None:
         _ocr_readers = []
         try:
             import easyocr
-            allow_download = config.OCR_MODEL_DIR is None
+            model_dir = config.OCR_MODEL_DIR
+            # Disable download when a local model directory is configured.
+            allow_download = model_dir is None
             base_kwargs = {
                 'gpu': config.OCR_USE_GPU,
                 'verbose': False,
                 'download_enabled': allow_download,
             }
-            if config.OCR_MODEL_DIR:
-                base_kwargs['model_storage_directory'] = config.OCR_MODEL_DIR
+            if model_dir:
+                base_kwargs['model_storage_directory'] = model_dir
+                logger.info('OCR model directory: %s', model_dir)
 
             for group in config.OCR_LANG_GROUPS:
                 try:
@@ -65,8 +72,9 @@ def get_ocr_readers():
                     logger.info('EasyOCR reader initialised (langs: %s)', ', '.join(group))
                 except Exception as e:
                     logger.warning(
-                        'EasyOCR reader failed for group %s — recognition for '
-                        'these languages will be unavailable: %s', group, e)
+                        'EasyOCR reader failed for group %s — '
+                        'recognition for these languages will be unavailable: %s',
+                        group, e)
         except Exception as e:
             logger.warning('EasyOCR unavailable: %s — OCR disabled', e)
     return _ocr_readers
@@ -124,6 +132,8 @@ LANGUAGE_NAMES = {
     'mr':    ('马拉地文',    'Marathi'),
     'ne':    ('尼泊尔文',    'Nepali'),
     'unknown': ('未知语言',  'Unknown'),
+    'symbols': ('符号',      'Symbols'),
+    'latin':   ('拉丁文',    'Latin'),
 }
 
 def get_lang_name(code):
@@ -185,11 +195,19 @@ def _detect_script(text):
     Returns (lang_code, confidence_pct):
       - non-Latin script clearly dominant  → (iso_code, pct)
       - text is Latin / ASCII              → ('latin', pct)
+      - text is predominantly symbols/digits with few alphabetic chars
+                                           → ('symbols', pct)
       - no alphabetic characters found     → (None, 0.0)
 
     Japanese is identified when Hiragana/Katakana characters make up at
     least _SCRIPT_JA_KANA_MIN_RATIO of alphabetic characters; shared CJK
     ideographs are then counted toward the Japanese total.
+
+    Supported scripts via Unicode ranges:
+      CJK (zh/ja/ko), Arabic (ar), Cyrillic (ru), Devanagari (hi),
+      Bengali (bn), Gujarati (gu), Gurmukhi/Punjabi (pa), Kannada (kn),
+      Tamil (ta), Telugu (te), Oriya (or), Thai (th), Tibetan (bo),
+      Mongolian (mn), Greek (el), Hebrew (he), Khmer (km).
     """
     counts = {}
     latin_count = 0
@@ -207,6 +225,14 @@ def _detect_script(text):
                 break
         if not matched and ch.isascii():
             latin_count += 1
+
+    # Symbols detection: if non-space chars vastly outnumber alphabetic chars,
+    # classify the text as a symbols/numeric category.
+    non_space = sum(1 for c in text if not c.isspace())
+    if non_space > 0 and total_alpha == 0:
+        return 'symbols', 100.0
+    if non_space >= 4 and total_alpha / non_space < 0.25:
+        return 'symbols', round((1 - total_alpha / non_space) * 100, 1)
 
     if total_alpha == 0:
         return None, 0.0
@@ -523,10 +549,19 @@ def recognize():
         if detected_text.strip():
             # Step 1: Unicode script detection — reliable for all non-Latin
             # scripts regardless of text length or langdetect biases.
+            # Also detects symbols/numeric text.
             script_lang, script_conf = _detect_script(detected_text)
 
-            if script_lang and script_lang != 'latin':
-                # Non-Latin script clearly identified from character ranges alone.
+            if script_lang == 'symbols':
+                # Text is predominantly symbols/digits — no language applicable.
+                lang_code  = 'symbols'
+                confidence = script_conf
+                zh, en = get_lang_name('symbols')
+                all_langs = [{'lang': 'symbols', 'name_zh': zh,
+                              'name_en': en, 'prob': script_conf}]
+            elif script_lang and script_lang != 'latin':
+                # Non-Latin script identified from character ranges —
+                # no further detection needed.
                 lang_code  = script_lang
                 confidence = script_conf
                 zh, en = get_lang_name(lang_code)

@@ -3,6 +3,10 @@ __pycache__/
 *.pyo
 *.pyd
 backend/uploads/
+# Model weight files (large binaries — download via backend/download_models.py)
+backend/models/*.pth
+backend/models/*.pt
+backend/ocr_models/
 *.log
 .env
 venv/

@@ -39,7 +39,16 @@ def get_ocr_reader():
     if _ocr_reader is None:
         try:
             import easyocr
-            kwargs = {'gpu': config.OCR_USE_GPU, 'verbose': False}
+            # When a local model directory is configured, disable automatic
+            # downloading — the service should never make outbound network
+            # requests at runtime.  Run backend/download_models.py once
+            # (with internet access) to populate the directory beforehand.
+            allow_download = config.OCR_MODEL_DIR is None
+            kwargs = {
+                'gpu': config.OCR_USE_GPU,
+                'verbose': False,
+                'download_enabled': allow_download,
+            }
             if config.OCR_MODEL_DIR:
                 kwargs['model_storage_directory'] = config.OCR_MODEL_DIR
             _ocr_reader = easyocr.Reader(config.OCR_LANGS, **kwargs)

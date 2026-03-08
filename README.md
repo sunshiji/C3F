@@ -164,59 +164,50 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ---
 
-### 5. OCR 模型预下载（无外网服务器必读）
+### 5. OCR 模型下载与配置
 
-EasyOCR 在**首次加载**某个语种时会从网络自动下载对应的模型权重文件。  
-若服务器无法访问外网，会出现以下错误并导致识别功能失效：
+EasyOCR 在首次使用某个语种时需要下载对应的模型权重文件（共约 1–3 GB）。  
+**强烈建议**在启动服务前使用项目内置脚本**一次性**完成下载，避免服务运行时因
+网络波动导致的识别失败。
 
-```
-WARNING EasyOCR unavailable: <urlopen error [Errno 101] Network is unreachable>
-```
+#### 5.1 运行一键下载脚本
 
-解决方法：在**有网络的机器**上提前下载所有模型，再拷贝到服务器。
-
-#### 5.1 在有网络的机器上下载模型
+在项目根目录执行（需能访问互联网）：
 
 ```bash
-# 激活 c3f 环境
+cd /home/szh/system/C3F
+
+# 激活 conda 环境后直接运行
 conda activate c3f
-
-# 触发下载；模型默认存储到 ~/.EasyOCR/model/（约 1–3 GB）
-python - <<'EOF'
-import easyocr
-easyocr.Reader(
-    ['ch_sim', 'ch_tra', 'en', 'ja', 'ko',
-     'ar', 'hi', 'ru', 'th', 'bn', 'ta', 'kn', 'te'],
-    gpu=False,
-    download_enabled=True,
-)
-print("模型下载完成，路径：~/.EasyOCR/model/")
-EOF
+python backend/download_models.py
 ```
 
-#### 5.2 将模型拷贝到服务器
+脚本将把所有模型文件保存到 `backend/ocr_models/`，并在最后输出下一步配置命令。  
+支持参数：
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--model-dir DIR` | 模型保存目录 | `backend/ocr_models` |
+| `--langs LANGS` | 逗号分隔的语种代码 | 全部 13 个 |
 
 ```bash
-# 将下载好的模型目录整体拷贝到服务器（路径可自定义）
-scp -r ~/.EasyOCR/model/ szh@10.109.119.208:/home/szh/system/C3F/ocr_models/
+# 示例：只下载中英日韩，保存到自定义目录
+python backend/download_models.py \
+  --model-dir /data/easyocr_models \
+  --langs ch_sim,en,ja,ko
 ```
 
-#### 5.3 配置 OCR_MODEL_DIR 指向模型目录
+> 如果下载中断，重新运行脚本即可——已下载的文件会被自动跳过。
 
-**方法 A：手动启动时指定**
+#### 5.2 配置 OCR_MODEL_DIR（服务读取本地模型）
 
-```bash
-OCR_MODEL_DIR=/home/szh/system/C3F/ocr_models \
-  /home/szh/anaconda3/envs/c3f/bin/python backend/app.py
-```
-
-**方法 B：写入 systemd 服务文件**（推荐，重启后自动生效）
+**方法 A：写入 systemd 服务文件**（推荐，重启后自动生效）
 
 编辑 `~/.config/systemd/user/c3f.service`，在 `[Service]` 节中添加：
 
 ```ini
 [Service]
-Environment="OCR_MODEL_DIR=/home/szh/system/C3F/ocr_models"
+Environment="OCR_MODEL_DIR=/home/szh/system/C3F/backend/ocr_models"
 ```
 
 然后重新加载并重启：
@@ -226,49 +217,46 @@ systemctl --user daemon-reload
 systemctl --user restart c3f
 ```
 
-#### 5.4 可选：精简加载语言以加快启动
-
-默认加载 13 个语种（`ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,ta,kn,te`）。  
-如需加快启动速度或减少内存占用，可通过 `OCR_LANGS` 只加载所需语种：
+**方法 B：手动启动时指定**
 
 ```bash
-OCR_LANGS=ch_sim,en,ja,ko \
-OCR_MODEL_DIR=/home/szh/system/C3F/ocr_models \
+OCR_MODEL_DIR=/home/szh/system/C3F/backend/ocr_models \
   /home/szh/anaconda3/envs/c3f/bin/python backend/app.py
 ```
 
-> **注**：`OCR_LANGS` 中的每个语种都必须在 `OCR_MODEL_DIR` 中有对应的模型文件，否则仍会尝试下载。  
-> EasyOCR 支持语种完整列表：<https://www.jaided.ai/easyocr/>
+> **重要**：配置 `OCR_MODEL_DIR` 后，服务启动时会完全禁用自动下载。
+> 若模型文件缺失，EasyOCR 将直接报错而非尝试下载，从而避免服务挂起。
 
-#### 5.5 GPU 推理（默认开启）
+#### 5.3 GPU 推理（默认开启）
 
-系统默认开启 GPU 推理（`OCR_USE_GPU=1`），速度比 CPU 快 5–10 倍。  
-GPU 推理需要满足以下条件：
-
-- NVIDIA GPU（Pascal 架构或更新）
-- 已安装 CUDA Toolkit（推荐 11.x / 12.x）
-- PyTorch GPU 版本（`torch` 安装时包含 CUDA 支持）
+系统默认开启 GPU 推理（`OCR_USE_GPU=1`），速度比 CPU 快 5–10 倍。
 
 **验证 GPU 是否可用**
 
 ```bash
-/home/szh/anaconda3/envs/c3f/bin/python -c "import torch; print(torch.cuda.is_available())"
-# 输出 True → GPU 推理正常
-# 输出 False → 请检查 CUDA 驱动或改用 CPU 模式
+/home/szh/anaconda3/envs/c3f/bin/python -c \
+  "import torch; print('GPU 可用' if torch.cuda.is_available() else 'GPU 不可用，将使用 CPU')"
 ```
 
 **无 GPU 时切换到 CPU 模式**
 
-```bash
-# 方法 A：临时运行
-OCR_USE_GPU=0 /home/szh/anaconda3/envs/c3f/bin/python backend/app.py
-
-# 方法 B：写入 systemd 服务文件（重启后生效）
-# 编辑 ~/.config/systemd/user/c3f.service，在 [Service] 节中添加：
-# Environment="OCR_USE_GPU=0"
-# 然后执行：
-systemctl --user daemon-reload && systemctl --user restart c3f
+```ini
+# ~/.config/systemd/user/c3f.service [Service] 节中添加：
+Environment="OCR_USE_GPU=0"
 ```
+
+#### 5.4 可选：精简加载语种以加快启动
+
+默认加载 13 个语种（`ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,ta,kn,te`）。
+如需加快启动速度，可通过 `OCR_LANGS` 只加载所需语种，**并确保 `OCR_MODEL_DIR`
+中已有对应的模型文件**（先用 `--langs` 参数运行下载脚本）：
+
+```ini
+# ~/.config/systemd/user/c3f.service [Service] 节中添加：
+Environment="OCR_LANGS=ch_sim,en,ja,ko"
+```
+
+> EasyOCR 支持语种完整列表：<https://www.jaided.ai/easyocr/>
 
 ---
 

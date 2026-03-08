@@ -6,6 +6,9 @@ download_models.py — 一次性 EasyOCR 模型下载工具
 下载完成后，将目录路径配置到 OCR_MODEL_DIR 环境变量，服务启动时将直接读取
 本地文件，不再发起任何网络请求。
 
+EasyOCR 对不同 Unicode 字符集的语种有兼容性限制（例如泰文只能与英文搭配），
+本脚本自动按兼容分组分批下载，无需手动处理。
+
 用法
 ----
 # 下载到默认目录 backend/ocr_models（推荐）
@@ -31,6 +34,10 @@ import sys
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_MODEL_DIR = os.path.join(_SCRIPT_DIR, 'ocr_models')
 _DEFAULT_LANGS = 'ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,ta,kn,te'
+
+# Import grouping logic from config.py to avoid duplicating the template list.
+sys.path.insert(0, _SCRIPT_DIR)
+from config import _make_lang_groups  # noqa: E402
 
 
 def parse_args():
@@ -60,12 +67,14 @@ def main():
     args = parse_args()
     langs = [l.strip() for l in args.langs.split(',') if l.strip()]
     model_dir = os.path.abspath(args.model_dir)
+    groups = _make_lang_groups(langs)
 
     print('=' * 60)
     print('EasyOCR 模型下载工具')
     print('=' * 60)
     print(f'目标目录 : {model_dir}')
     print(f'语种列表 : {", ".join(langs)}')
+    print(f'分组数量 : {len(groups)} 组（EasyOCR 每组独立 Reader）')
     print(f'GPU 模式 : {"是" if args.gpu else "否（下载仅需 CPU）"}')
     print('-' * 60)
 
@@ -78,26 +87,38 @@ def main():
         print('  pip install easyocr', file=sys.stderr)
         sys.exit(1)
 
-    print('\n正在初始化 EasyOCR 并下载缺失的模型文件，请稍候……')
+    print('\n正在按兼容分组逐批下载模型文件，请稍候……')
     print('（首次运行约需下载 1–3 GB，请确保网络畅通）\n')
 
-    try:
-        easyocr.Reader(
-            langs,
-            gpu=args.gpu,
-            model_storage_directory=model_dir,
-            download_enabled=True,
-            verbose=True,
-        )
-    except Exception as exc:
-        print(f'\n[错误] 下载失败：{exc}', file=sys.stderr)
-        print('\n排查建议：', file=sys.stderr)
-        print('  1. 检查网络连接：curl -I https://github.com', file=sys.stderr)
-        print('  2. 如有代理，请先设置：export https_proxy=http://proxy:port', file=sys.stderr)
-        print('  3. 重新运行本脚本（断点续传不受支持，但已下载的文件会被跳过）', file=sys.stderr)
+    failed = []
+    for i, group in enumerate(groups, 1):
+        print(f'[{i}/{len(groups)}] 下载分组：{", ".join(group)}')
+        try:
+            easyocr.Reader(
+                group,
+                gpu=args.gpu,
+                model_storage_directory=model_dir,
+                download_enabled=True,
+                verbose=True,
+            )
+            print(f'  ✓ 完成\n')
+        except Exception as exc:
+            print(f'  ✗ 失败：{exc}\n', file=sys.stderr)
+            failed.append((group, str(exc)))
+
+    print('=' * 60)
+    if failed:
+        print(f'✗ {len(failed)} 个分组下载失败：')
+        for group, err in failed:
+            print(f'  {", ".join(group)}: {err}')
+        print()
+        print('排查建议：')
+        print('  1. 检查网络连接：curl -I https://github.com')
+        print('  2. 如有代理，请先设置：export https_proxy=http://proxy:port')
+        print('  3. 重新运行本脚本（已下载的文件会被自动跳过）')
+        print('=' * 60)
         sys.exit(1)
 
-    print('\n' + '=' * 60)
     print('✓ 所有模型下载完成！')
     print(f'  模型目录：{model_dir}')
     print()

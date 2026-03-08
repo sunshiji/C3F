@@ -32,30 +32,44 @@ CORS(app, supports_credentials=True, origins='*')
 os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
 
 # ── OCR 依赖（可选）────────────────────────────────────────────
-_ocr_reader = None
+# One EasyOCR Reader per compatible language group.  Languages from
+# different Unicode script families (e.g. Thai vs. CJK) cannot share
+# a Reader; see config.OCR_LANG_GROUPS for the grouping logic.
+_ocr_readers = None   # list[easyocr.Reader] after first call, or []
 
-def get_ocr_reader():
-    global _ocr_reader
-    if _ocr_reader is None:
+def get_ocr_readers():
+    """Return the list of initialised EasyOCR Reader objects.
+
+    Readers are created lazily on the first call and cached.  One Reader
+    is created per entry in config.OCR_LANG_GROUPS so that incompatible
+    script families never end up in the same Reader instance.
+    """
+    global _ocr_readers
+    if _ocr_readers is None:
+        _ocr_readers = []
         try:
             import easyocr
-            # When a local model directory is configured, disable automatic
-            # downloading — the service should never make outbound network
-            # requests at runtime.  Run backend/download_models.py once
-            # (with internet access) to populate the directory beforehand.
             allow_download = config.OCR_MODEL_DIR is None
-            kwargs = {
+            base_kwargs = {
                 'gpu': config.OCR_USE_GPU,
                 'verbose': False,
                 'download_enabled': allow_download,
             }
             if config.OCR_MODEL_DIR:
-                kwargs['model_storage_directory'] = config.OCR_MODEL_DIR
-            _ocr_reader = easyocr.Reader(config.OCR_LANGS, **kwargs)
-            logger.info('EasyOCR reader initialized (langs: %s)', ', '.join(config.OCR_LANGS))
+                base_kwargs['model_storage_directory'] = config.OCR_MODEL_DIR
+
+            for group in config.OCR_LANG_GROUPS:
+                try:
+                    reader = easyocr.Reader(group, **base_kwargs)
+                    _ocr_readers.append(reader)
+                    logger.info('EasyOCR reader initialised (langs: %s)', ', '.join(group))
+                except Exception as e:
+                    logger.warning(
+                        'EasyOCR reader failed for group %s — recognition for '
+                        'these languages will be unavailable: %s', group, e)
         except Exception as e:
-            logger.warning(f'EasyOCR unavailable: {e}')
-    return _ocr_reader
+            logger.warning('EasyOCR unavailable: %s — OCR disabled', e)
+    return _ocr_readers
 
 # ── 语言代码 → 中文名称 ────────────────────────────────────────
 LANGUAGE_NAMES = {
@@ -482,11 +496,17 @@ def recognize():
     all_langs     = []
 
     try:
-        reader = get_ocr_reader()
-        if reader:
-            results = reader.readtext(filepath)
-            texts   = [r[1] for r in results]
-            scores  = [r[2] for r in results]
+        readers = get_ocr_readers()
+        if readers:
+            # Run every script-group reader on the image and merge results.
+            # Each reader covers a different Unicode script family and
+            # only returns text it recognises, so merging produces
+            # complete coverage without duplication.
+            all_results = []
+            for reader in readers:
+                all_results.extend(reader.readtext(filepath))
+            texts   = [r[1] for r in all_results]
+            scores  = [r[2] for r in all_results]
             detected_text = ' '.join(texts)
             if scores:
                 confidence = round(sum(scores) / len(scores) * 100, 2)

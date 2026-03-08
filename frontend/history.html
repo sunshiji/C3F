@@ -43,14 +43,14 @@
     .page-btn:disabled { opacity:.4; cursor:not-allowed; }
 
     /* 图片灯箱 */
-    #lightbox { position:fixed; inset:0; background:rgba(0,0,0,.8); z-index:9999;
+    #lightbox { position:fixed; inset:0; background:rgba(0,0,0,.85); z-index:10000;
                 display:flex; align-items:center; justify-content:center; }
     #lightboxImg { max-width:90vw; max-height:90vh; border-radius:1rem; }
     #lightboxClose { position:absolute; top:1rem; right:1.5rem; color:#fff; font-size:2rem;
-                     cursor:pointer; background:none; border:none; }
+                     cursor:pointer; background:none; border:none; z-index:10001; }
 
     /* 详情模态框 */
-    #detailModal { position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:9998;
+    #detailModal { position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:9999;
                    display:flex; align-items:center; justify-content:center; padding:1rem; }
     #detailPanel { background:#fff; border-radius:1.25rem; box-shadow:0 8px 40px rgba(0,0,0,.18);
                    width:100%; max-width:640px; max-height:92vh; display:flex; flex-direction:column; }
@@ -193,7 +193,7 @@
 
   <!-- 灯箱 -->
   <div id="lightbox" class="hidden">
-    <button id="lightboxClose" onclick="closeLightbox()">
+    <button id="lightboxClose">
       <i class="fas fa-times"></i>
     </button>
     <img id="lightboxImg" src="" alt="预览">
@@ -380,14 +380,21 @@
     }
 
     function openLightbox(url) {
+      if (!url) return;
       document.getElementById('lightboxImg').src = url;
       document.getElementById('lightbox').classList.remove('hidden');
     }
     function closeLightbox() {
       document.getElementById('lightbox').classList.add('hidden');
+      document.getElementById('lightboxImg').src = '';
     }
     document.getElementById('lightbox').addEventListener('click', function(e) {
       if (e.target === this) closeLightbox();
+    });
+    // Stop lightbox close-button click from bubbling to the lightbox backdrop
+    document.getElementById('lightboxClose').addEventListener('click', function(e) {
+      e.stopPropagation();
+      closeLightbox();
     });
 
     function formatBytes(b) {
@@ -398,6 +405,7 @@
     }
 
     function openDetail(id) {
+      closeLightbox();  // always start with a clean state
       const r = recordsMap[id];
       if (!r) return;
       document.getElementById('detailImg').src = `${API}${r.image_url}`;
@@ -423,6 +431,7 @@
       document.body.style.overflow = 'hidden';
     }
     function closeDetail() {
+      closeLightbox();  // ensure lightbox is also dismissed
       document.getElementById('detailModal').classList.add('hidden');
       document.body.style.overflow = '';
     }

@@ -916,19 +916,22 @@ def create_user():
     u_role   = data.get('role', 'user')
     if not username or not password:
         return jsonify({'success': False, 'message': '用户名和密码不能为空'}), 400
+    conn = None
     try:
         conn = get_db()
         cur = conn.cursor()
         cur.execute('INSERT INTO users (username, password, email, role) VALUES (?,?,?,?)',
                     (username, md5(password), email, u_role))
         conn.commit()
-        conn.close()
         return jsonify({'success': True, 'message': '创建成功'})
     except sqlite3.IntegrityError:
         return jsonify({'success': False, 'message': '用户名已存在'}), 409
     except Exception as e:
         logger.error(f'Create user error: {e}')
         return jsonify({'success': False, 'message': '创建失败'}), 500
+    finally:
+        if conn:
+            conn.close()
 
 @app.route('/api/users/<int:user_id>', methods=['PUT'])
 @require_login

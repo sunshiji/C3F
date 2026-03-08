@@ -9,7 +9,7 @@
 ## 功能特性
 
 - 🖼️ **图像上传识别**：拖放或点击上传图片，自动 OCR + 语种分类
-- 🌍 **多语种支持**：中文、英文、日文、韩文、阿拉伯文、法文等 20+ 种语言
+- 🌍 **多语种支持**：支持 21 种语言/文种（15 种 EasyOCR + 6 种 Unicode 范围检测），涵盖 CJK、阿拉伯文、梵文系、西里尔文等字符体系，以及符号类别（详见下方语种列表）
 - 📊 **可视化仪表盘**：识别统计、趋势图、语种分布图
 - 🗂️ **历史记录**：查询、筛选、删除识别记录
 - 👥 **用户管理**：管理员可创建/禁用用户
@@ -17,23 +17,58 @@
 
 ---
 
+## 支持的语种
+
+| 语种 | 识别方式 | ISO 代码 |
+|------|---------|---------|
+| 简体中文 | EasyOCR | `ch_sim` |
+| 繁体中文 | EasyOCR | `ch_tra` |
+| 英文（拉丁文） | EasyOCR | `en` |
+| 日文 | EasyOCR | `ja` |
+| 韩文 | EasyOCR | `ko` |
+| 阿拉伯文 | EasyOCR | `ar` |
+| 印地语（天城体） | EasyOCR | `hi` |
+| 俄文（西里尔） | EasyOCR | `ru` |
+| 泰文 | EasyOCR | `th` |
+| 孟加拉文 | EasyOCR | `bn` |
+| 卡纳达文 | EasyOCR | `kn` |
+| 泰卢固文 | EasyOCR | `te` |
+| 古吉拉特文 | EasyOCR | `gu` |
+| 旁遮普文（古鲁穆奇） | EasyOCR | `pa` |
+| 泰米尔文 | EasyOCR | `ta` |
+| 希腊文 | Unicode 范围检测 | `el` |
+| 希伯来文 | Unicode 范围检测 | `he` |
+| 柬埔寨文（高棉文） | Unicode 范围检测 | `km` |
+| 藏文 | Unicode 范围检测 | `bo` |
+| 蒙古文 | Unicode 范围检测 | `mn` |
+| 奥里亚文 | Unicode 范围检测 | `or` |
+| 符号/数字类 | Unicode 范围检测 | `symbols` |
+
+> 希腊文、希伯来文、柬埔寨文、藏文、蒙古文和奥里亚文通过 Unicode 字符范围直接识别，
+> 无需下载额外的模型权重文件。
+
+---
+
 ## 项目结构
 
 ```
 C3F/
-├── frontend/           # HTML 原型（Tailwind CSS + FontAwesome）
-│   ├── login.html      # 登录页
-│   ├── index.html      # 主框架（侧边栏 + iframe）
-│   ├── home.html       # 仪表盘
-│   ├── upload.html     # 图像识别页
-│   ├── history.html    # 历史记录页
-│   └── settings.html   # 系统设置页
-├── backend/            # Python Flask 后端
-│   ├── app.py          # 主应用
-│   ├── config.py       # 配置文件
-│   └── requirements.txt
+├── frontend/               # HTML 原型（Tailwind CSS + FontAwesome）
+│   ├── login.html          # 登录页
+│   ├── index.html          # 主框架（侧边栏 + iframe）
+│   ├── home.html           # 仪表盘
+│   ├── upload.html         # 图像识别页
+│   ├── history.html        # 历史记录页
+│   └── settings.html       # 系统设置页
+├── backend/                # Python Flask 后端
+│   ├── app.py              # 主应用
+│   ├── config.py           # 配置文件
+│   ├── download_models.py  # OCR 模型权重一键下载工具
+│   ├── requirements.txt    # pip 依赖
+│   └── models/             # ★ OCR 模型权重目录（.pth 文件，不纳入版本控制）
+│       └── README.md       # 模型目录说明
 ├── database/
-│   └── schema.sql      # SQLite DDL 参考（应用启动时自动建表）
+│   └── schema.sql          # SQLite DDL 参考（应用启动时自动建表）
 └── deploy/
     ├── environment.yml     # Conda 环境定义
     ├── nginx.conf          # Nginx 反向代理配置（可选）
@@ -72,7 +107,7 @@ chmod +x deploy/start.sh
 bash deploy/start.sh
 ```
 
-脚本自动完成：目录创建 → Conda 环境创建（禁用代理）→ 用户级 systemd 服务注册并启动。  
+脚本自动完成：目录创建（含 `backend/models/`）→ Conda 环境创建（禁用代理）→ 用户级 systemd 服务注册并启动。  
 **数据库无需任何配置**：应用首次启动时自动创建 SQLite 文件 `backend/c3f.db` 并写入初始账号。
 
 > **注**：如需系统重启后服务自动恢复（注销后保持运行），
@@ -166,9 +201,13 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ### 5. OCR 模型下载与配置
 
-EasyOCR 在首次使用某个语种时需要下载对应的模型权重文件（共约 1–3 GB）。  
-**强烈建议**在启动服务前使用项目内置脚本**一次性**完成下载，避免服务运行时因
-网络波动导致的识别失败。
+EasyOCR 的模型权重文件存放在 `backend/models/` 目录。  
+后端启动时会**自动检测**该目录：
+
+- 若目录中有 `.pth` 文件 → 直接从本地加载，**不联网**
+- 若目录为空 → EasyOCR 使用默认缓存目录（`~/.EasyOCR/model/`），首次识别时自动下载
+
+**强烈建议**在启动服务前使用内置脚本**一次性**完成下载，避免服务运行时因网络波动导致识别失败。
 
 #### 5.1 运行一键下载脚本
 
@@ -182,24 +221,35 @@ conda activate c3f
 python backend/download_models.py
 ```
 
-脚本将把所有模型文件保存到 `backend/ocr_models/`，并在最后输出下一步配置命令。  
+脚本将把所有模型文件保存到 `backend/models/`（约 1–3 GB）。下载完成后，后端启动时会
+自动检测到该目录并从本地加载模型，**无需配置 `OCR_MODEL_DIR` 环境变量**。
+
 支持参数：
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `--model-dir DIR` | 模型保存目录 | `backend/ocr_models` |
-| `--langs LANGS` | 逗号分隔的语种代码 | 全部 13 个 |
+| `--model-dir DIR` | 模型保存目录 | `backend/models` |
+| `--langs LANGS` | 逗号分隔的语种代码 | 全部 15 个 |
+| `--gpu` | 下载时启用 GPU | 否（CPU 即可） |
 
 ```bash
-# 示例：只下载中英日韩，保存到自定义目录
-python backend/download_models.py \
-  --model-dir /data/easyocr_models \
-  --langs ch_sim,en,ja,ko
+# 示例：只下载中英日韩
+python backend/download_models.py --langs ch_sim,en,ja,ko
+
+# 示例：保存到自定义目录
+python backend/download_models.py --model-dir /data/ocr_models
 ```
 
 > 如果下载中断，重新运行脚本即可——已下载的文件会被自动跳过。
+>
+> 泰米尔文（`ta`）在 EasyOCR 1.7.x 中可能存在模型兼容性警告，该分组失败不会影响
+> 其他语种的正常工作。
 
-#### 5.2 配置 OCR_MODEL_DIR（服务读取本地模型）
+#### 5.2 配置自定义模型目录（可选）
+
+默认情况下，后端自动检测 `backend/models/`，**无需手动配置**。
+
+如果需要将模型放在其他位置，通过环境变量指定：
 
 **方法 A：写入 systemd 服务文件**（推荐，重启后自动生效）
 
@@ -207,7 +257,7 @@ python backend/download_models.py \
 
 ```ini
 [Service]
-Environment="OCR_MODEL_DIR=/home/szh/system/C3F/backend/ocr_models"
+Environment="OCR_MODEL_DIR=/path/to/your/models"
 ```
 
 然后重新加载并重启：
@@ -220,12 +270,12 @@ systemctl --user restart c3f
 **方法 B：手动启动时指定**
 
 ```bash
-OCR_MODEL_DIR=/home/szh/system/C3F/backend/ocr_models \
+OCR_MODEL_DIR=/path/to/your/models \
   /home/szh/anaconda3/envs/c3f/bin/python backend/app.py
 ```
 
-> **重要**：配置 `OCR_MODEL_DIR` 后，服务启动时会完全禁用自动下载。
-> 若模型文件缺失，EasyOCR 将直接报错而非尝试下载，从而避免服务挂起。
+> **提示**：配置 `OCR_MODEL_DIR` 后，服务会完全禁用自动下载。若指定目录中
+> 模型文件缺失，EasyOCR 将直接报错而非尝试下载，从而避免服务挂起。
 
 #### 5.3 GPU 推理（默认开启）
 
@@ -247,14 +297,17 @@ Environment="OCR_USE_GPU=0"
 
 #### 5.4 可选：精简加载语种以加快启动
 
-默认加载 13 个语种（`ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,ta,kn,te`）。
-如需加快启动速度，可通过 `OCR_LANGS` 只加载所需语种，**并确保 `OCR_MODEL_DIR`
+默认加载全部 15 个 EasyOCR 语种（`ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,kn,te,gu,pa,ta`）。
+如需加快启动速度，可通过 `OCR_LANGS` 只加载所需语种，**并确保 `backend/models/`
 中已有对应的模型文件**（先用 `--langs` 参数运行下载脚本）：
 
 ```ini
 # ~/.config/systemd/user/c3f.service [Service] 节中添加：
 Environment="OCR_LANGS=ch_sim,en,ja,ko"
 ```
+
+以下语种通过 Unicode 范围检测，**无需 EasyOCR 模型权重**，不受 `OCR_LANGS` 限制：
+希腊文（`el`）、希伯来文（`he`）、柬埔寨文（`km`）、藏文（`bo`）、蒙古文（`mn`）、奥里亚文（`or`）
 
 > EasyOCR 支持语种完整列表：<https://www.jaided.ai/easyocr/>
 
@@ -283,8 +336,8 @@ Environment="OCR_LANGS=ch_sim,en,ja,ko"
 |----|------|
 | 前端 | HTML5 + Tailwind CSS + FontAwesome + Chart.js |
 | 后端 | Python 3 + Flask + Flask-CORS |
-| OCR | EasyOCR（自然场景文字识别） |
-| 语种检测 | langdetect |
+| OCR | EasyOCR 1.7（自然场景文字识别，15 种语言，本地模型权重） |
+| 语种检测 | Unicode 范围检测 + langdetect（拉丁文系后处理） |
 | 数据库 | SQLite 3（内置于 Python，无需安装，自动创建） |
 | Web 服务器 | Nginx（反向代理，可选） |
 | 部署环境 | Ubuntu Linux + Conda（/home/szh/anaconda3）+ 用户级 systemd |
@@ -305,3 +358,4 @@ Environment="OCR_LANGS=ch_sim,en,ja,ko"
 | GET/PUT | `/api/profile` | 查看/更新个人信息 |
 | GET/POST | `/api/users` | 用户列表/创建用户（管理员） |
 | PUT/DELETE | `/api/users/{id}` | 更新/删除用户（管理员） |
+

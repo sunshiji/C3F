@@ -47,7 +47,7 @@ OCR_MODEL_DIR = _resolve_model_dir()
 #
 # 说明：下列语种 EasyOCR 暂无模型支持，系统改用 Unicode 字符范围检测：
 #   希腊文(el)、希伯来文(he)、柬埔寨/高棉文(km)、藏文(bo)、蒙古文(mn)、奥里亚文(or)
-_DEFAULT_OCR_LANGS = 'ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,kn,te,gu,pa,ta'
+_DEFAULT_OCR_LANGS = 'ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,kn,te'
 OCR_LANGS = [l.strip() for l in
              os.environ.get('OCR_LANGS', _DEFAULT_OCR_LANGS).split(',')
              if l.strip()]
@@ -56,20 +56,21 @@ OCR_LANGS = [l.strip() for l in
 # Reader 实例中混用。下表列出已验证的兼容分组，每组独立创建一个 Reader。
 # 每个分组都包含 'en'，因为大多数识别网络依赖英文基础权重。
 _LANG_GROUP_TEMPLATES = [
-    ['ch_sim', 'en', 'ja', 'ko'],   # CJK 简体 + 日文/韩文 + 拉丁
-    ['ch_tra', 'en'],               # 繁体中文 — 严格限制最多 2 种语言
+    # ch_sim 严格只能与 en 组合（EasyOCR 限制）
+    ['ch_sim', 'en'],               # 简体中文
+    ['ch_tra', 'en'],               # 繁体中文
+    ['ja',     'en'],               # 日文（独立 Reader，不可与 ch_sim 合并）
+    ['ko',     'en'],               # 韩文（独立 Reader，不可与 ch_sim 合并）
     ['ar',     'en'],               # 阿拉伯文
     ['hi',     'en'],               # 天城体（印地语）
     ['ru',     'en'],               # 西里尔字母（俄语）
-    ['th',     'en'],               # 泰文 — 严格限制最多 2 种语言
+    ['th',     'en'],               # 泰文
     ['bn',     'en'],               # 孟加拉文
     ['kn',     'en'],               # 卡纳达文
     ['te',     'en'],               # 泰卢固文
-    ['gu',     'en'],               # 古吉拉特文
-    ['pa',     'en'],               # 旁遮普文（古鲁穆奇字母）
-    # 泰米尔文：EasyOCR 1.7.x 中 ta 的模型检查点输出类别数与包期望不一致，
-    # 加载失败时会被自动跳过，不影响其余语种的正常工作。
-    ['ta',     'en'],               # 泰米尔文
+    # 以下语种当前版本 EasyOCR 不支持，已从列表中移除：
+    #   gu（古吉拉特文）、pa（古鲁穆奇/旁遮普文）— EasyOCR 1.7.x 无对应模型
+    #   ta（泰米尔文）— 模型检查点输出维度与当前包版本不兼容（size mismatch）
 ]
 
 def _make_lang_groups(langs):

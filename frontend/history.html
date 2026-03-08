@@ -48,6 +48,12 @@
     #lightboxImg { max-width:90vw; max-height:90vh; border-radius:1rem; }
     #lightboxClose { position:absolute; top:1rem; right:1.5rem; color:#fff; font-size:2rem;
                      cursor:pointer; background:none; border:none; }
+
+    /* 详情模态框 */
+    #detailModal { position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:9998;
+                   display:flex; align-items:center; justify-content:center; padding:1rem; }
+    #detailPanel { background:#fff; border-radius:1.25rem; box-shadow:0 8px 40px rgba(0,0,0,.18);
+                   width:100%; max-width:640px; max-height:92vh; display:flex; flex-direction:column; }
   </style>
 </head>
 <body class="p-6">
@@ -116,6 +122,75 @@
     </div>
   </div>
 
+  <!-- 详情模态框 -->
+  <div id="detailModal" class="hidden">
+    <div id="detailPanel">
+      <!-- 头部 -->
+      <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
+        <h3 class="text-base font-semibold text-gray-800">
+          <i class="fas fa-file-image text-blue-500 mr-2"></i>识别详情
+        </h3>
+        <button onclick="closeDetail()" class="text-gray-400 hover:text-gray-600 text-xl leading-none bg-none border-none cursor-pointer">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <!-- 主体 -->
+      <div class="overflow-y-auto flex-1 p-6 space-y-5">
+        <div class="flex flex-col sm:flex-row gap-5">
+          <!-- 缩略图 -->
+          <div class="flex-shrink-0">
+            <img id="detailImg" src="" alt="识别图像"
+                 class="w-full sm:w-44 h-auto rounded-xl border border-gray-200 object-contain cursor-pointer hover:opacity-80"
+                 onclick="openLightbox(this.src)">
+            <p class="text-center text-xs text-gray-400 mt-1">点击查看原图</p>
+          </div>
+          <!-- 元数据 -->
+          <div class="flex-1 space-y-3">
+            <div>
+              <div class="text-xs font-medium text-gray-400 mb-0.5">文件名</div>
+              <div id="detailFilename" class="text-sm text-gray-700 font-medium break-all"></div>
+            </div>
+            <div class="flex flex-wrap gap-4">
+              <div>
+                <div class="text-xs font-medium text-gray-400 mb-0.5">识别语种</div>
+                <span id="detailLangBadge" class="badge"></span>
+              </div>
+              <div>
+                <div class="text-xs font-medium text-gray-400 mb-0.5">置信度</div>
+                <div id="detailConf" class="text-sm text-gray-700"></div>
+              </div>
+              <div>
+                <div class="text-xs font-medium text-gray-400 mb-0.5">文件大小</div>
+                <div id="detailSize" class="text-sm text-gray-500"></div>
+              </div>
+            </div>
+            <div>
+              <div class="text-xs font-medium text-gray-400 mb-0.5">识别时间</div>
+              <div id="detailTime" class="text-sm text-gray-500"></div>
+            </div>
+            <div id="detailUserRow" class="hidden">
+              <div class="text-xs font-medium text-gray-400 mb-0.5">上传用户</div>
+              <div id="detailUser" class="text-sm text-gray-500"></div>
+            </div>
+          </div>
+        </div>
+        <!-- 识别文本 -->
+        <div>
+          <div class="text-xs font-medium text-gray-400 mb-2">识别文本</div>
+          <pre id="detailText"
+               class="bg-gray-50 border border-gray-200 rounded-xl p-4 text-sm text-gray-700 whitespace-pre-wrap break-words max-h-52 overflow-y-auto font-mono leading-relaxed">
+          </pre>
+        </div>
+      </div>
+      <!-- 底部 -->
+      <div class="flex justify-end gap-2 px-6 py-3 border-t border-gray-100 flex-shrink-0">
+        <button onclick="closeDetail()" class="btn" style="background:#f1f5f9;color:#64748b">
+          <i class="fas fa-times"></i>关闭
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- 灯箱 -->
   <div id="lightbox" class="hidden">
     <button id="lightboxClose" onclick="closeLightbox()">
@@ -132,6 +207,7 @@
     let currentPage = 1;
     const perPage   = 10;
     let searchTimer = null;
+    let recordsMap = {};   // id → record, for detail modal
 
     const LANG_BADGE = {
       zh:'bg-red-100 text-red-700', en:'bg-blue-100 text-blue-700',
@@ -178,6 +254,9 @@
     }
 
     function renderTable(rows) {
+      recordsMap = {};
+      rows.forEach(r => { recordsMap[r.id] = r; });
+
       if (!rows.length) {
         document.getElementById('tableArea').innerHTML = `
           <div class="text-center py-16 text-gray-300">
@@ -238,6 +317,10 @@
                     ${(r.created_at||'').slice(0,16)}
                   </td>
                   <td class="py-3 text-right">
+                    <button onclick="openDetail(${r.id})"
+                      class="btn btn-sm mr-1" style="background:#eff6ff;color:#3b82f6">
+                      <i class="fas fa-eye"></i>
+                    </button>
                     <button onclick="deleteRecord(${r.id}, this)"
                       class="btn btn-danger btn-sm">
                       <i class="fas fa-trash-alt"></i>
@@ -313,6 +396,39 @@
       if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
       return (b/1048576).toFixed(1) + ' MB';
     }
+
+    function openDetail(id) {
+      const r = recordsMap[id];
+      if (!r) return;
+      document.getElementById('detailImg').src = `${API}${r.image_url}`;
+      document.getElementById('detailFilename').textContent = r.original_filename || r.filename || '-';
+      const lc  = (r.detected_language || '').toLowerCase();
+      const cls = LANG_BADGE[lc] || 'bg-gray-100 text-gray-600';
+      const badge = document.getElementById('detailLangBadge');
+      badge.className = `badge ${cls}`;
+      badge.textContent = r.language_name || '-';
+      document.getElementById('detailConf').textContent =
+        r.confidence ? `${r.confidence.toFixed(1)}%` : '-';
+      document.getElementById('detailSize').textContent = formatBytes(r.file_size);
+      document.getElementById('detailTime').textContent = (r.created_at || '').slice(0, 19);
+      if (r.username && user && user.role === 'admin') {
+        document.getElementById('detailUser').textContent = r.username;
+        document.getElementById('detailUserRow').classList.remove('hidden');
+      } else {
+        document.getElementById('detailUserRow').classList.add('hidden');
+      }
+      document.getElementById('detailText').textContent =
+        (r.detected_text || '').trim() || '（未提取到文本）';
+      document.getElementById('detailModal').classList.remove('hidden');
+      document.body.style.overflow = 'hidden';
+    }
+    function closeDetail() {
+      document.getElementById('detailModal').classList.add('hidden');
+      document.body.style.overflow = '';
+    }
+    document.getElementById('detailModal').addEventListener('click', function(e) {
+      if (e.target === this) closeDetail();
+    });
 
     loadHistory();
   </script>

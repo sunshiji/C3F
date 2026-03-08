@@ -79,6 +79,93 @@ def get_ocr_readers():
             logger.warning('EasyOCR unavailable: %s — OCR disabled', e)
     return _ocr_readers
 
+
+def _preprocess_for_ocr(filepath):
+    """Upscale small images and enhance contrast to improve EasyOCR accuracy.
+
+    Returns the path to a (possibly new) temp file.  When a temp file is
+    created, the caller is responsible for deleting it.  If preprocessing
+    fails the original *filepath* is returned unchanged.
+    """
+    try:
+        from PIL import Image, ImageEnhance
+        img = Image.open(filepath)
+        if img.mode not in ('RGB', 'L'):
+            img = img.convert('RGB')
+        w, h = img.size
+        # Upscale if the shorter side is too small — EasyOCR performs poorly
+        # on images narrower/shorter than ~640 px.
+        if min(w, h) < 640:
+            scale = 640 / min(w, h)
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        # Moderate contrast boost helps distinguish text from background.
+        img = ImageEnhance.Contrast(img).enhance(1.4)
+        import tempfile
+        suffix = os.path.splitext(filepath)[1] or '.png'
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=suffix, delete=False, dir=config.UPLOAD_FOLDER)
+        tmp.close()
+        img.save(tmp.name)
+        return tmp.name
+    except Exception:
+        return filepath
+
+
+# Minimum confidence score (0–1) for an OCR text region to be kept.
+# Regions below this threshold are typically garbled output from a
+# wrong-script reader and should be discarded.
+_OCR_MIN_CONFIDENCE = 0.2
+
+# Overlap fraction (relative to the smaller box) above which two
+# detections from different script-group readers are considered
+# duplicates of the same text region.
+_OCR_OVERLAP_THRESHOLD = 0.4
+
+
+def _sort_ocr_results(results):
+    """Sort EasyOCR results in reading order and remove low-confidence/duplicate entries.
+
+    Steps:
+    1. Drop results whose confidence falls below MIN_CONF.
+    2. Sort remaining results top-to-bottom, left-to-right.
+    3. Deduplicate: when two boxes overlap significantly, keep the one with
+       higher confidence (handles the same text being seen by multiple
+       script-group readers).
+    """
+    def _rect(bbox):
+        xs = [p[0] for p in bbox]
+        ys = [p[1] for p in bbox]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    def _iou_min(b1, b2):
+        """Overlap fraction relative to the *smaller* bounding box."""
+        ax1, ay1, ax2, ay2 = _rect(b1)
+        bx1, by1, bx2, by2 = _rect(b2)
+        ix = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+        iy = max(0.0, min(ay2, by2) - max(ay1, by1))
+        inter = ix * iy
+        if inter == 0.0:
+            return 0.0
+        a1 = max(1, (ax2 - ax1) * (ay2 - ay1))
+        a2 = max(1, (bx2 - bx1) * (by2 - by1))
+        return inter / min(a1, a2)
+
+    filtered = [r for r in results if r[2] >= _OCR_MIN_CONFIDENCE]
+    filtered.sort(key=lambda r: (min(p[1] for p in r[0]), min(p[0] for p in r[0])))
+
+    kept = []
+    for r in filtered:
+        duplicate = False
+        for i, k in enumerate(kept):
+            if _iou_min(r[0], k[0]) >= _OCR_OVERLAP_THRESHOLD:
+                if r[2] > k[2]:
+                    kept[i] = r
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(r)
+    return kept
+
 # ── 语言代码 → 中文名称 ────────────────────────────────────────
 LANGUAGE_NAMES = {
     'zh':    ('中文',        'Chinese'),
@@ -524,13 +611,21 @@ def recognize():
     try:
         readers = get_ocr_readers()
         if readers:
-            # Run every script-group reader on the image and merge results.
-            # Each reader covers a different Unicode script family and
-            # only returns text it recognises, so merging produces
-            # complete coverage without duplication.
-            all_results = []
-            for reader in readers:
-                all_results.extend(reader.readtext(filepath))
+            # Preprocess image (upscale small images, boost contrast) then
+            # run every script-group reader and merge results.
+            proc_path = _preprocess_for_ocr(filepath)
+            try:
+                all_results = []
+                for reader in readers:
+                    all_results.extend(reader.readtext(proc_path))
+            finally:
+                if proc_path != filepath:
+                    try:
+                        os.unlink(proc_path)
+                    except OSError:
+                        pass
+            # Sort into reading order and remove duplicates from overlapping readers.
+            all_results = _sort_ocr_results(all_results)
             texts   = [r[1] for r in all_results]
             scores  = [r[2] for r in all_results]
             detected_text = ' '.join(texts)

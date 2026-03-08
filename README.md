@@ -9,7 +9,7 @@
 ## 功能特性
 
 - 🖼️ **图像上传识别**：拖放或点击上传图片，自动 OCR + 语种分类
-- 🌍 **多语种支持**：支持 21 种语言/文种（15 种 EasyOCR + 6 种 Unicode 范围检测），涵盖 CJK、阿拉伯文、梵文系、西里尔文等字符体系，以及符号类别（详见下方语种列表）
+- 🌍 **多语种支持**：支持 18 种语言/文种（12 种 EasyOCR + 6 种 Unicode 范围检测），涵盖 CJK、阿拉伯文、梵文系、西里尔文等字符体系，以及符号类别（详见下方语种列表）
 - 📊 **可视化仪表盘**：识别统计、趋势图、语种分布图
 - 🗂️ **历史记录**：查询、筛选、删除识别记录
 - 👥 **用户管理**：管理员可创建/禁用用户
@@ -33,9 +33,6 @@
 | 孟加拉文 | EasyOCR | `bn` |
 | 卡纳达文 | EasyOCR | `kn` |
 | 泰卢固文 | EasyOCR | `te` |
-| 古吉拉特文 | EasyOCR | `gu` |
-| 旁遮普文（古鲁穆奇） | EasyOCR | `pa` |
-| 泰米尔文 | EasyOCR | `ta` |
 | 希腊文 | Unicode 范围检测 | `el` |
 | 希伯来文 | Unicode 范围检测 | `he` |
 | 柬埔寨文（高棉文） | Unicode 范围检测 | `km` |
@@ -229,7 +226,7 @@ python backend/download_models.py
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `--model-dir DIR` | 模型保存目录 | `backend/models` |
-| `--langs LANGS` | 逗号分隔的语种代码 | 全部 15 个 |
+| `--langs LANGS` | 逗号分隔的语种代码 | 全部 12 个 |
 | `--gpu` | 下载时启用 GPU | 否（CPU 即可） |
 
 ```bash
@@ -242,8 +239,8 @@ python backend/download_models.py --model-dir /data/ocr_models
 
 > 如果下载中断，重新运行脚本即可——已下载的文件会被自动跳过。
 >
-> 泰米尔文（`ta`）在 EasyOCR 1.7.x 中可能存在模型兼容性警告，该分组失败不会影响
-> 其他语种的正常工作。
+> 以下语种已从 EasyOCR 支持列表移除（当前版本不兼容）：
+> 古吉拉特文（`gu`）、旁遮普文（`pa`）— 无对应模型；泰米尔文（`ta`）— 模型权重维度与当前 EasyOCR 1.7.x 不兼容。
 
 #### 5.2 配置自定义模型目录（可选）
 
@@ -297,7 +294,7 @@ Environment="OCR_USE_GPU=0"
 
 #### 5.4 可选：精简加载语种以加快启动
 
-默认加载全部 15 个 EasyOCR 语种（`ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,kn,te,gu,pa,ta`）。
+默认加载全部 12 个 EasyOCR 语种（`ch_sim,ch_tra,en,ja,ko,ar,hi,ru,th,bn,kn,te`）。
 如需加快启动速度，可通过 `OCR_LANGS` 只加载所需语种，**并确保 `backend/models/`
 中已有对应的模型文件**（先用 `--langs` 参数运行下载脚本）：
 
@@ -336,7 +333,7 @@ Environment="OCR_LANGS=ch_sim,en,ja,ko"
 |----|------|
 | 前端 | HTML5 + Tailwind CSS + FontAwesome + Chart.js |
 | 后端 | Python 3 + Flask + Flask-CORS |
-| OCR | EasyOCR 1.7（自然场景文字识别，15 种语言，本地模型权重） |
+| OCR | EasyOCR 1.7（自然场景文字识别，12 种语言，本地模型权重） |
 | 语种检测 | Unicode 范围检测 + langdetect（拉丁文系后处理） |
 | 数据库 | SQLite 3（内置于 Python，无需安装，自动创建） |
 | Web 服务器 | Nginx（反向代理，可选） |

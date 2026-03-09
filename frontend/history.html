@@ -44,10 +44,13 @@
 
     /* 图片灯箱 */
     #lightbox { position:fixed; inset:0; background:rgba(0,0,0,.85); z-index:10000;
-                display:flex; align-items:center; justify-content:center; }
+                display:flex; align-items:center; justify-content:center; cursor:pointer; }
     #lightboxImg { max-width:90vw; max-height:90vh; border-radius:1rem; }
     #lightboxClose { position:absolute; top:1rem; right:1.5rem; color:#fff; font-size:2rem;
                      cursor:pointer; background:none; border:none; z-index:10001; }
+    #lightboxHint { position:absolute; bottom:1.25rem; left:50%; transform:translateX(-50%);
+                    color:rgba(255,255,255,.55); font-size:.78rem; pointer-events:none;
+                    white-space:nowrap; }
 
     /* 详情模态框 */
     #detailModal { position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:9999;
@@ -193,10 +196,11 @@
 
   <!-- 灯箱 -->
   <div id="lightbox" class="hidden">
-    <button id="lightboxClose">
+    <button id="lightboxClose" onclick="event.stopPropagation();closeLightbox()">
       <i class="fas fa-times"></i>
     </button>
     <img id="lightboxImg" src="" alt="预览">
+    <span id="lightboxHint">点击任意处关闭</span>
   </div>
 
   <script>
@@ -388,12 +392,9 @@
       document.getElementById('lightbox').classList.add('hidden');
       document.getElementById('lightboxImg').src = '';
     }
-    document.getElementById('lightbox').addEventListener('click', function(e) {
-      if (e.target === this) closeLightbox();
-    });
-    // Stop lightbox close-button click from bubbling to the lightbox backdrop
-    document.getElementById('lightboxClose').addEventListener('click', function(e) {
-      e.stopPropagation();
+    // Clicking anywhere inside the lightbox (image OR backdrop) closes it,
+    // so the detail modal buttons are never permanently blocked.
+    document.getElementById('lightbox').addEventListener('click', function() {
       closeLightbox();
     });
 

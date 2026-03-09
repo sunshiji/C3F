@@ -211,15 +211,15 @@
       <div class="space-y-4">
         <div>
           <label class="field-label">用户名 *</label>
-          <input id="newUsername" type="text" placeholder="请输入用户名" class="input-field">
+          <input id="newUsername" type="text" placeholder="请输入用户名" class="input-field" autocomplete="off">
         </div>
         <div>
           <label class="field-label">密码 *</label>
-          <input id="newPassword" type="password" placeholder="请输入密码" class="input-field">
+          <input id="newPassword" type="password" placeholder="请输入密码" class="input-field" autocomplete="new-password">
         </div>
         <div>
           <label class="field-label">邮箱</label>
-          <input id="newEmail" type="email" placeholder="请输入邮箱（可选）" class="input-field">
+          <input id="newEmail" type="email" placeholder="请输入邮箱（可选）" class="input-field" autocomplete="off">
         </div>
         <div>
           <label class="field-label">角色</label>
@@ -233,7 +233,7 @@
         <button class="btn btn-primary flex-1" onclick="createUser()" id="createBtn">
           <i class="fas fa-check"></i>创建用户
         </button>
-        <button class="btn btn-outline" onclick="closeCreateModal()">
+        <button class="btn btn-outline" onclick="event.stopPropagation();closeCreateModal()">
           取消
         </button>
       </div>

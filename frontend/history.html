@@ -42,9 +42,10 @@
     .page-btn.active { background:#3b82f6; color:#fff; border-color:#3b82f6; }
     .page-btn:disabled { opacity:.4; cursor:not-allowed; }
 
-    /* 图片灯箱 */
+    /* 图片灯箱 — display:none by default; JS sets style.display directly to avoid
+       CSS specificity conflicts with Tailwind's .hidden class */
     #lightbox { position:fixed; inset:0; background:rgba(0,0,0,.85); z-index:10000;
-                display:flex; align-items:center; justify-content:center; cursor:pointer; }
+                display:none; align-items:center; justify-content:center; cursor:pointer; }
     #lightboxImg { max-width:90vw; max-height:90vh; border-radius:1rem; }
     #lightboxClose { position:absolute; top:1rem; right:1.5rem; color:#fff; font-size:2rem;
                      cursor:pointer; background:none; border:none; z-index:10001; }
@@ -52,9 +53,9 @@
                     color:rgba(255,255,255,.55); font-size:.78rem; pointer-events:none;
                     white-space:nowrap; }
 
-    /* 详情模态框 */
+    /* 详情模态框 — display:none by default; JS sets style.display directly */
     #detailModal { position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:9999;
-                   display:flex; align-items:center; justify-content:center; padding:1rem; }
+                   display:none; align-items:center; justify-content:center; padding:1rem; }
     #detailPanel { background:#fff; border-radius:1.25rem; box-shadow:0 8px 40px rgba(0,0,0,.18);
                    width:100%; max-width:640px; max-height:92vh; display:flex; flex-direction:column; }
   </style>
@@ -126,8 +127,8 @@
   </div>
 
   <!-- 详情模态框 -->
-  <div id="detailModal" class="hidden">
-    <div id="detailPanel" onclick="event.stopPropagation()">
+  <div id="detailModal">
+    <div id="detailPanel">
       <!-- 头部 -->
       <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
         <h3 class="text-base font-semibold text-gray-800">
@@ -144,7 +145,7 @@
           <div class="flex-shrink-0">
             <img id="detailImg" src="" alt="识别图像"
                  class="w-full sm:w-44 h-auto rounded-xl border border-gray-200 object-contain cursor-pointer hover:opacity-80"
-                 onclick="openLightbox(this.src)">
+                 onclick="window.open(this.src,'_blank','noopener,noreferrer')" title="点击在新标签中查看原图">
             <p class="text-center text-xs text-gray-400 mt-1">点击查看原图</p>
           </div>
           <!-- 元数据 -->
@@ -195,7 +196,7 @@
   </div>
 
   <!-- 灯箱 -->
-  <div id="lightbox" class="hidden">
+  <div id="lightbox">
     <button id="lightboxClose" onclick="event.stopPropagation();closeLightbox()">
       <i class="fas fa-times"></i>
     </button>
@@ -386,14 +387,13 @@
     function openLightbox(url) {
       if (!url) return;
       document.getElementById('lightboxImg').src = url;
-      document.getElementById('lightbox').classList.remove('hidden');
+      document.getElementById('lightbox').style.display = 'flex';
     }
     function closeLightbox() {
-      document.getElementById('lightbox').classList.add('hidden');
+      document.getElementById('lightbox').style.display = 'none';
       document.getElementById('lightboxImg').src = '';
     }
-    // Clicking anywhere inside the lightbox (image OR backdrop) closes it,
-    // so the detail modal buttons are never permanently blocked.
+    // Clicking anywhere inside the lightbox (image OR backdrop) closes it.
     document.getElementById('lightbox').addEventListener('click', function() {
       closeLightbox();
     });
@@ -428,12 +428,12 @@
       }
       document.getElementById('detailText').textContent =
         (r.detected_text || '').trim() || '（未提取到文本）';
-      document.getElementById('detailModal').classList.remove('hidden');
+      document.getElementById('detailModal').style.display = 'flex';
       document.body.style.overflow = 'hidden';
     }
     function closeDetail() {
-      closeLightbox();  // ensure lightbox is also dismissed
-      document.getElementById('detailModal').classList.add('hidden');
+      closeLightbox();
+      document.getElementById('detailModal').style.display = 'none';
       document.body.style.overflow = '';
     }
     document.getElementById('detailModal').addEventListener('click', function(e) {

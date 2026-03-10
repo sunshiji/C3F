@@ -104,6 +104,13 @@ OCR_USE_GPU = os.environ.get('OCR_USE_GPU', '1').strip() not in ('0', 'false', '
 MAX_CONTENT_MB = 16
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff'}
 
+# ── StarNet 权重目录 ───────────────────────────────────────────
+# 存放训练好的 StarNet .pth 权重文件的目录。
+# 覆盖方式：STARNET_WEIGHTS_DIR=/path/to/weight python app.py
+STARNET_WEIGHTS_DIR = os.environ.get(
+    'STARNET_WEIGHTS_DIR',
+    '/home/szh/system/C3F/weight')
+
 # ── Server ─────────────────────────────────────────────────────
 HOST = '0.0.0.0'
 PORT = 5000

@@ -18,6 +18,15 @@ from werkzeug.utils import secure_filename
 
 import config
 
+# ── StarNet 推理模块（可选，依赖 torch / timm）──────────────────
+try:
+    from starnet_infer import classify_image as _starnet_classify
+    _STARNET_AVAILABLE = True
+except ImportError:
+    _STARNET_AVAILABLE = False
+    def _starnet_classify(*_args, **_kwargs):
+        raise RuntimeError('StarNet dependencies (torch/timm) are not installed')
+
 # ── 初始化 ────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -581,6 +590,24 @@ _FALLBACK_ALL_LANGS   = [
     {'lang': 'zh', 'name_zh': '中文',  'name_en': 'Chinese',  'prob': 25.0},
     {'lang': 'ja', 'name_zh': '日文',  'name_en': 'Japanese', 'prob': 15.0},
 ]
+
+@app.route('/api/weights', methods=['GET'])
+@require_login
+def list_weights():
+    """List available StarNet .pth weight files from STARNET_WEIGHTS_DIR."""
+    weights_dir = config.STARNET_WEIGHTS_DIR
+    if not os.path.isdir(weights_dir):
+        return jsonify({'success': True, 'weights': []})
+    weights = []
+    for fname in sorted(os.listdir(weights_dir)):
+        if fname.lower().endswith(('.pth', '.pt')):
+            weights.append({
+                'filename': fname,
+                'display':  os.path.splitext(fname)[0],
+            })
+    return jsonify({'success': True, 'weights': weights})
+
+
 @app.route('/api/recognize', methods=['POST'])
 @require_login
 def recognize():
@@ -602,6 +629,9 @@ def recognize():
     f.save(filepath)
     file_size = os.path.getsize(filepath)
 
+    # 读取可选的 StarNet 权重文件名（basename only，防止路径穿越）
+    weight_name = os.path.basename((request.form.get('weight') or '').strip())
+
     # OCR + 语种识别
     detected_text = ''
     lang_code     = 'unknown'
@@ -609,92 +639,113 @@ def recognize():
     all_langs     = []
 
     try:
-        readers = get_ocr_readers()
-        if readers:
-            # Preprocess image (upscale small images, boost contrast) then
-            # run every script-group reader and merge results.
-            proc_path = _preprocess_for_ocr(filepath)
-            try:
-                all_results = []
-                for reader in readers:
-                    all_results.extend(reader.readtext(proc_path))
-            finally:
-                if proc_path != filepath:
-                    try:
-                        os.unlink(proc_path)
-                    except OSError:
-                        pass
-            # Sort into reading order and remove duplicates from overlapping readers.
-            all_results = _sort_ocr_results(all_results)
-            texts   = [r[1] for r in all_results]
-            scores  = [r[2] for r in all_results]
-            detected_text = ' '.join(texts)
-            if scores:
-                confidence = round(sum(scores) / len(scores) * 100, 2)
+        if weight_name:
+            # ── StarNet 路径：直接用图像分类模型识别语种 ──────────
+            # Validate extension to prevent referencing non-model files
+            if not weight_name.lower().endswith(('.pth', '.pt')):
+                return jsonify({'success': False,
+                                'message': '权重文件格式无效，仅支持 .pth / .pt'}), 400
+            weight_path = os.path.join(config.STARNET_WEIGHTS_DIR, weight_name)
+            if not os.path.isfile(weight_path):
+                return jsonify({'success': False,
+                                'message': f'权重文件不存在: {weight_name}'}), 400
+            result     = _starnet_classify(filepath, weight_path)
+            lang_code  = result['lang_code']
+            confidence = result['confidence']
+            all_langs  = result['all_langs']
+            # Fill in localised language names from the master map
+            for item in all_langs:
+                zh, en = get_lang_name(item['lang'])
+                item['name_zh'] = zh
+                item['name_en'] = en
         else:
-            # 尝试 pytesseract
-            try:
-                from PIL import Image
-                import pytesseract
-                img = Image.open(filepath)
-                detected_text = pytesseract.image_to_string(img)
-            except Exception:
-                detected_text = ''
-
-        if detected_text.strip():
-            # Step 1: Unicode script detection — reliable for all non-Latin
-            # scripts regardless of text length or langdetect biases.
-            # Also detects symbols/numeric text.
-            script_lang, script_conf = _detect_script(detected_text)
-
-            if script_lang == 'symbols':
-                # Text is predominantly symbols/digits — no language applicable.
-                lang_code  = 'symbols'
-                confidence = script_conf
-                zh, en = get_lang_name('symbols')
-                all_langs = [{'lang': 'symbols', 'name_zh': zh,
-                              'name_en': en, 'prob': script_conf}]
-            elif script_lang and script_lang != 'latin':
-                # Non-Latin script identified from character ranges —
-                # no further detection needed.
-                lang_code  = script_lang
-                confidence = script_conf
-                zh, en = get_lang_name(lang_code)
-                all_langs = [{'lang': lang_code, 'name_zh': zh,
-                              'name_en': en, 'prob': script_conf}]
-            else:
-                # Latin-script or ambiguous: use langdetect to distinguish
-                # between English, French, German, Spanish, etc.
+            # ── EasyOCR 路径：提取文字后再判断语种 ───────────────
+            readers = get_ocr_readers()
+            if readers:
+                # Preprocess image (upscale small images, boost contrast) then
+                # run every script-group reader and merge results.
+                proc_path = _preprocess_for_ocr(filepath)
                 try:
-                    from langdetect import detect, detect_langs
-                    lang_code = detect(detected_text)
-                    raw_langs = detect_langs(detected_text)
-                    all_langs = [
-                        {'lang': str(l).split(':')[0],
-                         'prob': round(float(str(l).split(':')[1]) * 100, 1)}
-                        for l in raw_langs
-                    ]
-                    for item in all_langs:
-                        zh, en = get_lang_name(item['lang'])
-                        item['name_zh'] = zh
-                        item['name_en'] = en
-                    top = next((l for l in all_langs if l['lang'] == lang_code), None)
-                    if top:
-                        confidence = top['prob']
-                except Exception as e:
-                    logger.warning(f'langdetect error: {e}')
-                    if script_lang == 'latin':
-                        # Fallback: Latin text but langdetect failed
-                        lang_code  = 'en'
-                        confidence = 50.0
-                        zh, en = get_lang_name('en')
-                        all_langs = [{'lang': 'en', 'name_zh': zh,
-                                      'name_en': en, 'prob': 50.0}]
-        else:
-            # 无文本时根据图像统计模拟（演示用）
-            lang_code  = _FALLBACK_LANG_CODE
-            confidence = _FALLBACK_CONFIDENCE
-            all_langs  = [dict(item) for item in _FALLBACK_ALL_LANGS]
+                    all_results = []
+                    for reader in readers:
+                        all_results.extend(reader.readtext(proc_path))
+                finally:
+                    if proc_path != filepath:
+                        try:
+                            os.unlink(proc_path)
+                        except OSError:
+                            pass
+                # Sort into reading order and remove duplicates from overlapping readers.
+                all_results = _sort_ocr_results(all_results)
+                texts   = [r[1] for r in all_results]
+                scores  = [r[2] for r in all_results]
+                detected_text = ' '.join(texts)
+                if scores:
+                    confidence = round(sum(scores) / len(scores) * 100, 2)
+            else:
+                # 尝试 pytesseract
+                try:
+                    from PIL import Image
+                    import pytesseract
+                    img = Image.open(filepath)
+                    detected_text = pytesseract.image_to_string(img)
+                except Exception:
+                    detected_text = ''
+
+            if detected_text.strip():
+                # Step 1: Unicode script detection — reliable for all non-Latin
+                # scripts regardless of text length or langdetect biases.
+                # Also detects symbols/numeric text.
+                script_lang, script_conf = _detect_script(detected_text)
+
+                if script_lang == 'symbols':
+                    # Text is predominantly symbols/digits — no language applicable.
+                    lang_code  = 'symbols'
+                    confidence = script_conf
+                    zh, en = get_lang_name('symbols')
+                    all_langs = [{'lang': 'symbols', 'name_zh': zh,
+                                  'name_en': en, 'prob': script_conf}]
+                elif script_lang and script_lang != 'latin':
+                    # Non-Latin script identified from character ranges —
+                    # no further detection needed.
+                    lang_code  = script_lang
+                    confidence = script_conf
+                    zh, en = get_lang_name(lang_code)
+                    all_langs = [{'lang': lang_code, 'name_zh': zh,
+                                  'name_en': en, 'prob': script_conf}]
+                else:
+                    # Latin-script or ambiguous: use langdetect to distinguish
+                    # between English, French, German, Spanish, etc.
+                    try:
+                        from langdetect import detect, detect_langs
+                        lang_code = detect(detected_text)
+                        raw_langs = detect_langs(detected_text)
+                        all_langs = [
+                            {'lang': str(l).split(':')[0],
+                             'prob': round(float(str(l).split(':')[1]) * 100, 1)}
+                            for l in raw_langs
+                        ]
+                        for item in all_langs:
+                            zh, en = get_lang_name(item['lang'])
+                            item['name_zh'] = zh
+                            item['name_en'] = en
+                        top = next((l for l in all_langs if l['lang'] == lang_code), None)
+                        if top:
+                            confidence = top['prob']
+                    except Exception as e:
+                        logger.warning(f'langdetect error: {e}')
+                        if script_lang == 'latin':
+                            # Fallback: Latin text but langdetect failed
+                            lang_code  = 'en'
+                            confidence = 50.0
+                            zh, en = get_lang_name('en')
+                            all_langs = [{'lang': 'en', 'name_zh': zh,
+                                          'name_en': en, 'prob': 50.0}]
+            else:
+                # 无文本时根据图像统计模拟（演示用）
+                lang_code  = _FALLBACK_LANG_CODE
+                confidence = _FALLBACK_CONFIDENCE
+                all_langs  = [dict(item) for item in _FALLBACK_ALL_LANGS]
 
     except Exception as e:
         logger.error(f'Recognition error: {e}')

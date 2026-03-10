@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>系统设置 - 文种识别系统</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <style>
+    body { font-family:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+           background:#f0f7ff; color:#1e293b; }
+    .card { background:#fff; border-radius:1.25rem; padding:1.75rem;
+            box-shadow:0 2px 12px rgba(0,0,0,.06); border:1.5px solid #f1f5f9; }
+    .input-field {
+      width:100%; padding:.65rem 1rem; border:1.5px solid #e2e8f0;
+      border-radius:.875rem; font-size:.9rem; outline:none; color:#374151;
+      background:#fff; transition:border .2s;
+    }
+    .input-field:focus { border-color:#3b82f6; box-shadow:0 0 0 3px rgba(59,130,246,.1); }
+    .input-field:disabled { background:#f8fafc; color:#94a3b8; }
+    label.field-label { display:block; font-size:.8rem; font-weight:600; color:#64748b; margin-bottom:.5rem; }
+    .btn { display:inline-flex; align-items:center; gap:.45rem;
+           padding:.6rem 1.25rem; border-radius:.875rem; font-weight:600;
+           font-size:.875rem; cursor:pointer; border:none; transition:all .2s; }
+    .btn-primary { background:#3b82f6; color:#fff; }
+    .btn-primary:hover { background:#2563eb; }
+    .btn-primary:disabled { opacity:.55; cursor:not-allowed; }
+    .btn-danger  { background:#fef2f2; color:#ef4444; }
+    .btn-danger:hover  { background:#fee2e2; }
+    .btn-outline { background:#f1f5f9; color:#475569; }
+    .btn-outline:hover { background:#e2e8f0; }
+    .badge { display:inline-block; padding:.2rem .65rem; border-radius:9999px;
+             font-size:.7rem; font-weight:600; }
+    .tab { padding:.6rem 1rem; border-radius:.75rem; font-size:.875rem; font-weight:500;
+           cursor:pointer; color:#64748b; transition:all .2s; }
+    .tab.active { background:#3b82f6; color:#fff; }
+    .tab:not(.active):hover { background:#f1f5f9; }
+    .alert { border-radius:.875rem; padding:.75rem 1rem; font-size:.875rem;
+             display:flex; align-items:center; gap:.6rem; }
+    .alert-success { background:#f0fdf4; color:#16a34a; border:1.5px solid #bbf7d0; }
+    .alert-error   { background:#fef2f2; color:#ef4444; border:1.5px solid #fecaca; }
+    /* 用户表格 */
+    .user-table th { font-size:.78rem; font-weight:600; color:#94a3b8; padding:.75rem .5rem; }
+    .user-table td { font-size:.875rem; padding:.75rem .5rem; }
+    .user-table tr { border-bottom:1.5px solid #f1f5f9; }
+    .user-table tr:last-child { border-bottom:none; }
+    /* Modal */
+    #modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:9998;
+                     display:flex; align-items:center; justify-content:center; padding:1rem; }
+    #modal-box { background:#fff; border-radius:1.5rem; width:100%; max-width:420px;
+                 padding:2rem; box-shadow:0 20px 60px rgba(0,0,0,.2); }
+  </style>
+</head>
+<body class="p-6">
+
+  <!-- 标题 -->
+  <div class="mb-6">
+    <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-gear text-violet-500 mr-2"></i>系统设置</h2>
+    <p class="text-sm text-gray-400 mt-0.5">管理个人信息与系统配置</p>
+  </div>
+
+  <!-- Tabs -->
+  <div class="flex gap-2 mb-6 flex-wrap">
+    <button class="tab active" onclick="switchTab('profile', this)">
+      <i class="fas fa-user mr-1.5"></i>个人信息
+    </button>
+    <button class="tab" onclick="switchTab('password', this)">
+      <i class="fas fa-lock mr-1.5"></i>修改密码
+    </button>
+    <button class="tab" id="usersTab" onclick="switchTab('users', this)">
+      <i class="fas fa-users mr-1.5"></i>用户管理
+    </button>
+    <button class="tab" onclick="switchTab('about', this)">
+      <i class="fas fa-circle-info mr-1.5"></i>系统信息
+    </button>
+  </div>
+
+  <!-- ── 个人信息 tab ── -->
+  <div id="tab-profile">
+    <div class="card max-w-xl">
+      <div class="flex items-center gap-4 mb-6 pb-5 border-b border-gray-100">
+        <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-violet-500 flex items-center justify-center text-white text-2xl font-bold"
+             id="avatarText">U</div>
+        <div>
+          <div class="font-bold text-gray-800 text-lg" id="profileName">-</div>
+          <div class="text-sm text-gray-400" id="profileRole">-</div>
+        </div>
+      </div>
+      <div id="profileAlert" class="hidden mb-4"></div>
+      <div class="space-y-4">
+        <div>
+          <label class="field-label">用户名</label>
+          <input id="profUsername" type="text" class="input-field" disabled>
+        </div>
+        <div>
+          <label class="field-label">邮箱</label>
+          <input id="profEmail" type="email" placeholder="请输入邮箱" class="input-field">
+        </div>
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <div class="bg-gray-50 rounded-xl p-3">
+            <div class="text-gray-400 text-xs mb-0.5">注册时间</div>
+            <div class="font-medium text-gray-700" id="profCreated">-</div>
+          </div>
+          <div class="bg-gray-50 rounded-xl p-3">
+            <div class="text-gray-400 text-xs mb-0.5">最后登录</div>
+            <div class="font-medium text-gray-700" id="profLastLogin">-</div>
+          </div>
+        </div>
+      </div>
+      <div class="mt-5">
+        <button class="btn btn-primary" onclick="saveProfile()" id="saveProfileBtn">
+          <i class="fas fa-save"></i>保存修改
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 修改密码 tab ── -->
+  <div id="tab-password" class="hidden">
+    <div class="card max-w-xl">
+      <h3 class="font-semibold text-gray-700 mb-5"><i class="fas fa-key text-amber-400 mr-2"></i>修改登录密码</h3>
+      <div id="pwdAlert" class="hidden mb-4"></div>
+      <div class="space-y-4">
+        <div>
+          <label class="field-label">原密码</label>
+          <input id="oldPwd" type="password" placeholder="请输入原密码" class="input-field">
+        </div>
+        <div>
+          <label class="field-label">新密码</label>
+          <input id="newPwd" type="password" placeholder="请输入新密码（至少6位）" class="input-field">
+        </div>
+        <div>
+          <label class="field-label">确认新密码</label>
+          <input id="confirmPwd" type="password" placeholder="再次输入新密码" class="input-field">
+        </div>
+      </div>
+      <div class="mt-5 flex gap-3">
+        <button class="btn btn-primary" onclick="savePwd()" id="savePwdBtn">
+          <i class="fas fa-check"></i>确认修改
+        </button>
+        <button class="btn btn-outline" onclick="clearPwdForm()">
+          <i class="fas fa-rotate-left"></i>重置
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 用户管理 tab ── -->
+  <div id="tab-users" class="hidden">
+    <div class="card">
+      <div class="flex items-center justify-between mb-5">
+        <h3 class="font-semibold text-gray-700"><i class="fas fa-users text-blue-400 mr-2"></i>用户列表</h3>
+        <button class="btn btn-primary" onclick="openCreateModal()">
+          <i class="fas fa-user-plus"></i>添加用户
+        </button>
+      </div>
+      <div id="userTableArea">
+        <div class="text-center py-10 text-gray-400">
+          <i class="fas fa-spinner fa-spin text-3xl block mb-2"></i>加载中...
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 系统信息 tab ── -->
+  <div id="tab-about" class="hidden">
+    <div class="card max-w-xl">
+      <div class="text-center mb-6">
+        <div class="inline-flex items-center justify-center w-20 h-20 rounded-2xl mb-4"
+             style="background:linear-gradient(135deg,#3b82f6,#6366f1)">
+          <i class="fas fa-globe-asia text-white text-3xl"></i>
+        </div>
+        <h3 class="text-xl font-bold text-gray-800">自然场景文种识别系统</h3>
+        <p class="text-sm text-gray-400 mt-1">Natural Scene Text Language Recognition System</p>
+      </div>
+      <div class="space-y-3 text-sm">
+        <div class="flex justify-between py-2.5 border-b border-gray-100">
+          <span class="text-gray-500">系统版本</span><span class="font-medium text-gray-700">v1.0.0</span>
+        </div>
+        <div class="flex justify-between py-2.5 border-b border-gray-100">
+          <span class="text-gray-500">后端框架</span><span class="font-medium text-gray-700">Python Flask</span>
+        </div>
+        <div class="flex justify-between py-2.5 border-b border-gray-100">
+          <span class="text-gray-500">OCR 引擎</span><span class="font-medium text-gray-700">EasyOCR</span>
+        </div>
+        <div class="flex justify-between py-2.5 border-b border-gray-100">
+          <span class="text-gray-500">语种识别</span><span class="font-medium text-gray-700">LangDetect</span>
+        </div>
+        <div class="flex justify-between py-2.5 border-b border-gray-100">
+          <span class="text-gray-500">数据库</span><span class="font-medium text-gray-700">SQLite 3</span>
+        </div>
+        <div class="flex justify-between py-2.5 border-b border-gray-100">
+          <span class="text-gray-500">前端技术</span><span class="font-medium text-gray-700">HTML + Tailwind CSS</span>
+        </div>
+        <div class="flex justify-between py-2.5">
+          <span class="text-gray-500">服务器地址</span><span class="font-medium text-gray-700">10.109.119.208</span>
+        </div>
+      </div>
+      <div class="mt-6 p-4 bg-blue-50 rounded-xl text-sm text-blue-700">
+        <i class="fas fa-circle-info mr-2"></i>
+        本系统支持对自然场景图像中的文字进行语种自动识别，支持中、英、日、韩、阿拉伯等多种语言。
+      </div>
+    </div>
+  </div>
+
+  <!-- 创建用户 Modal -->
+  <div id="modal-overlay" class="hidden" onclick="if(event.target===this)closeCreateModal()">
+    <div id="modal-box">
+      <h3 class="font-bold text-gray-800 text-lg mb-5"><i class="fas fa-user-plus text-blue-500 mr-2"></i>添加新用户</h3>
+      <div id="modalAlert" class="hidden mb-4"></div>
+      <div class="space-y-4">
+        <div>
+          <label class="field-label">用户名 *</label>
+          <input id="newUsername" type="text" placeholder="请输入用户名" class="input-field" autocomplete="off">
+        </div>
+        <div>
+          <label class="field-label">密码 *</label>
+          <input id="newPassword" type="password" placeholder="请输入密码" class="input-field" autocomplete="new-password">
+        </div>
+        <div>
+          <label class="field-label">邮箱</label>
+          <input id="newEmail" type="email" placeholder="请输入邮箱（可选）" class="input-field" autocomplete="off">
+        </div>
+        <div>
+          <label class="field-label">角色</label>
+          <select id="newRole" class="input-field" style="appearance:none">
+            <option value="user">普通用户</option>
+            <option value="admin">管理员</option>
+          </select>
+        </div>
+      </div>
+      <div class="flex gap-3 mt-6">
+        <button class="btn btn-primary flex-1" onclick="createUser()" id="createBtn">
+          <i class="fas fa-check"></i>创建用户
+        </button>
+        <button class="btn btn-outline" onclick="event.stopPropagation();closeCreateModal()">
+          取消
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API = window.location.origin;
+    const user = JSON.parse(localStorage.getItem('c3f_user') || 'null');
+    if (!user) { localStorage.removeItem('c3f_user'); window.top.location.href = 'login.html'; }
+
+    // 非管理员隐藏用户管理 tab
+    if (user.role !== 'admin') {
+      document.getElementById('usersTab').style.display = 'none';
+    }
+
+    // ── Tab 切换 ──────────────────────────────────────────────
+    function switchTab(name, el) {
+      ['profile','password','users','about'].forEach(t => {
+        document.getElementById(`tab-${t}`).classList.add('hidden');
+      });
+      document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+      document.getElementById(`tab-${name}`).classList.remove('hidden');
+      el.classList.add('active');
+      if (name === 'users') loadUsers();
+    }
+
+    // ── 个人信息 ──────────────────────────────────────────────
+    async function loadProfile() {
+      try {
+        const res = await fetch(`${API}/api/profile`, { credentials:'include' });
+        if (res.status === 401) { localStorage.removeItem('c3f_user'); window.top.location.href = 'login.html'; return; }
+        const d = await res.json();
+        if (!d.success) return;
+        const u = d.user;
+        document.getElementById('avatarText').textContent    = (u.username||'U')[0].toUpperCase();
+        document.getElementById('profileName').textContent   = u.username || '-';
+        document.getElementById('profileRole').textContent   = u.role === 'admin' ? '管理员' : '普通用户';
+        document.getElementById('profUsername').value        = u.username || '';
+        document.getElementById('profEmail').value           = u.email    || '';
+        document.getElementById('profCreated').textContent   = (u.created_at||'').slice(0,10);
+        document.getElementById('profLastLogin').textContent = (u.last_login||'').slice(0,16) || '-';
+      } catch(e) { console.error(e); }
+    }
+
+    async function saveProfile() {
+      const email = document.getElementById('profEmail').value.trim();
+      const btn   = document.getElementById('saveProfileBtn');
+      btn.disabled = true;
+      hideAlert('profileAlert');
+      try {
+        const res = await fetch(`${API}/api/profile`, {
+          method:'PUT', credentials:'include',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ email })
+        });
+        const d = await res.json();
+        showAlert('profileAlert', d.success ? 'success' : 'error',
+                  d.message || (d.success ? '保存成功' : '保存失败'));
+      } catch(e) {
+        showAlert('profileAlert', 'error', '请求失败，请检查网络');
+      } finally { btn.disabled = false; }
+    }
+
+    // ── 修改密码 ──────────────────────────────────────────────
+    async function savePwd() {
+      const oldPwd     = document.getElementById('oldPwd').value;
+      const newPwd     = document.getElementById('newPwd').value;
+      const confirmPwd = document.getElementById('confirmPwd').value;
+      if (!oldPwd || !newPwd) {
+        showAlert('pwdAlert', 'error', '请填写原密码和新密码'); return;
+      }
+      if (newPwd.length < 6) {
+        showAlert('pwdAlert', 'error', '新密码不能少于6位'); return;
+      }
+      if (newPwd !== confirmPwd) {
+        showAlert('pwdAlert', 'error', '两次输入的密码不一致'); return;
+      }
+      const btn = document.getElementById('savePwdBtn');
+      btn.disabled = true;
+      hideAlert('pwdAlert');
+      try {
+        const res = await fetch(`${API}/api/profile`, {
+          method:'PUT', credentials:'include',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ old_password: oldPwd, new_password: newPwd })
+        });
+        const d = await res.json();
+        showAlert('pwdAlert', d.success ? 'success' : 'error',
+                  d.message || (d.success ? '密码修改成功，下次登录请使用新密码' : '修改失败'));
+        if (d.success) clearPwdForm();
+      } catch(e) {
+        showAlert('pwdAlert', 'error', '请求失败');
+      } finally { btn.disabled = false; }
+    }
+
+    function clearPwdForm() {
+      ['oldPwd','newPwd','confirmPwd'].forEach(id => document.getElementById(id).value = '');
+    }
+
+    // ── 用户管理 ──────────────────────────────────────────────
+    async function loadUsers() {
+      const area = document.getElementById('userTableArea');
+      area.innerHTML = `<div class="text-center py-10 text-gray-400">
+        <i class="fas fa-spinner fa-spin text-2xl block mb-2"></i>加载中...</div>`;
+      try {
+        const res = await fetch(`${API}/api/users`, { credentials:'include' });
+        const d   = await res.json();
+        if (!d.success) throw new Error(d.message);
+        renderUserTable(d.users);
+      } catch(e) {
+        area.innerHTML = `<div class="text-center py-8 text-red-400">加载失败：${e.message}</div>`;
+      }
+    }
+
+    function renderUserTable(users) {
+      const html = `
+        <div class="overflow-x-auto">
+        <table class="user-table w-full">
+          <thead>
+            <tr class="border-b border-gray-100">
+              <th>用户名</th><th>邮箱</th><th>角色</th><th>状态</th><th>注册时间</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${users.map(u => `
+              <tr>
+                <td class="font-medium">
+                  <div class="flex items-center gap-2">
+                    <div class="w-7 h-7 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs font-bold">
+                      ${(u.username||'?')[0].toUpperCase()}
+                    </div>
+                    ${u.username}
+                  </div>
+                </td>
+                <td class="text-gray-400 text-sm">${u.email||'-'}</td>
+                <td>
+                  <span class="badge ${u.role==='admin'?'bg-violet-100 text-violet-700':'bg-gray-100 text-gray-600'}">
+                    ${u.role==='admin'?'管理员':'普通用户'}
+                  </span>
+                </td>
+                <td>
+                  <span class="badge ${u.is_active?'bg-green-100 text-green-700':'bg-red-100 text-red-700'}">
+                    ${u.is_active?'启用':'禁用'}
+                  </span>
+                </td>
+                <td class="text-gray-400 text-xs">${(u.created_at||'').slice(0,10)}</td>
+                <td>
+                  <div class="flex gap-2">
+                    <button onclick="toggleUser(${u.id},${u.is_active?0:1},'${u.role}')"
+                      class="btn btn-outline" style="padding:.3rem .65rem;font-size:.78rem">
+                      ${u.is_active?'<i class="fas fa-ban"></i>禁用':'<i class="fas fa-check"></i>启用'}
+                    </button>
+                    <button onclick="deleteUser(${u.id})"
+                      class="btn btn-danger" style="padding:.3rem .65rem;font-size:.78rem">
+                      <i class="fas fa-trash-alt"></i>
+                    </button>
+                  </div>
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+        </div>`;
+      document.getElementById('userTableArea').innerHTML = html;
+    }
+
+    function openCreateModal() {
+      document.getElementById('modal-overlay').classList.remove('hidden');
+      hideAlert('modalAlert');
+      ['newUsername','newPassword','newEmail'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('newRole').value = 'user';
+      document.getElementById('createBtn').disabled = false;
+    }
+    function closeCreateModal() {
+      document.getElementById('modal-overlay').classList.add('hidden');
+    }
+
+    async function createUser() {
+      const username = document.getElementById('newUsername').value.trim();
+      const password = document.getElementById('newPassword').value;
+      const email    = document.getElementById('newEmail').value.trim();
+      const role     = document.getElementById('newRole').value;
+      if (!username || !password) {
+        showAlert('modalAlert', 'error', '用户名和密码不能为空'); return;
+      }
+      const btn = document.getElementById('createBtn');
+      hideAlert('modalAlert');
+      if (btn.disabled) return;   // guard against double-click
+      btn.disabled = true;
+      try {
+        const res = await fetch(`${API}/api/users`, {
+          method:'POST', credentials:'include',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ username, password, email, role })
+        });
+        const d = await res.json();
+        if (d.success) {
+          closeCreateModal();
+          loadUsers();
+        } else {
+          showAlert('modalAlert', 'error', d.message || '创建失败');
+        }
+      } catch(e) {
+        showAlert('modalAlert', 'error', '请求失败');
+      } finally { btn.disabled = false; }
+    }
+
+    async function toggleUser(id, active, role) {
+      try {
+        await fetch(`${API}/api/users/${id}`, {
+          method:'PUT', credentials:'include',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ is_active: active, role })
+        });
+        loadUsers();
+      } catch(e) { alert('操作失败'); }
+    }
+
+    async function deleteUser(id) {
+      if (!confirm('确认删除该用户？该用户的所有记录将一并删除。')) return;
+      try {
+        const res = await fetch(`${API}/api/users/${id}`, {
+          method:'DELETE', credentials:'include'
+        });
+        const d = await res.json();
+        if (d.success) loadUsers();
+        else alert('删除失败：' + d.message);
+      } catch(e) { alert('删除失败'); }
+    }
+
+    // ── 工具 ──────────────────────────────────────────────────
+    function showAlert(id, type, msg) {
+      const el = document.getElementById(id);
+      el.className = `alert ${type==='success'?'alert-success':'alert-error'}`;
+      el.innerHTML = `<i class="fas fa-${type==='success'?'check-circle':'circle-exclamation'}"></i> ${msg}`;
+      el.classList.remove('hidden');
+    }
+    function hideAlert(id) {
+      document.getElementById(id).classList.add('hidden');
+    }
+
+    // ── 初始化 ────────────────────────────────────────────────
+    loadProfile();
+  </script>
+</body>
+</html>

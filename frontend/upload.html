@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>图像识别 - 文种识别系统</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <style>
+    body { font-family:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+           background:#f0f7ff; color:#1e293b; }
+    .card { background:#fff; border-radius:1.25rem; padding:1.5rem;
+            box-shadow:0 2px 12px rgba(0,0,0,.06); border:1.5px solid #f1f5f9; }
+
+    /* 拖放区 */
+    #dropzone {
+      border: 2.5px dashed #93c5fd; border-radius: 1.25rem;
+      background: #f0f7ff; padding: 3rem 2rem;
+      text-align: center; cursor: pointer;
+      transition: all .25s;
+    }
+    #dropzone.drag-over {
+      border-color: #3b82f6; background: #dbeafe;
+    }
+    #dropzone:hover { border-color: #60a5fa; background: #eff6ff; }
+    #fileInput { display: none; }
+
+    /* 进度条 */
+    .progress-bar { height: 8px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
+    .progress-fill { height: 100%; border-radius: 999px;
+                     background: linear-gradient(90deg,#3b82f6,#6366f1);
+                     transition: width .4s ease; }
+
+    /* 置信度条 */
+    .conf-bar { height: 10px; border-radius: 999px; overflow: hidden; background:#e2e8f0; }
+    .conf-fill { height:100%; border-radius:999px; transition: width .8s ease; }
+
+    .badge { display:inline-block; padding:.2rem .65rem; border-radius:9999px;
+             font-size:.75rem; font-weight:600; }
+    .btn-primary {
+      display:inline-flex; align-items:center; gap:.5rem;
+      padding:.65rem 1.5rem; border-radius:.875rem; font-weight:600;
+      background:linear-gradient(135deg,#3b82f6,#6366f1); color:#fff;
+      border:none; cursor:pointer; font-size:.9rem; transition:opacity .2s;
+    }
+    .btn-primary:hover { opacity:.9; }
+    .btn-primary:disabled { opacity:.5; cursor:not-allowed; }
+    .btn-secondary {
+      display:inline-flex; align-items:center; gap:.5rem;
+      padding:.65rem 1.25rem; border-radius:.875rem; font-weight:500;
+      background:#f1f5f9; color:#475569; border:none; cursor:pointer; font-size:.875rem;
+      transition:background .2s;
+    }
+    .btn-secondary:hover { background:#e2e8f0; }
+  </style>
+</head>
+<body class="p-6">
+
+  <!-- 标题 -->
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-search text-blue-500 mr-2"></i>图像语种识别</h2>
+      <p class="text-sm text-gray-400 mt-0.5">上传包含文字的图像，自动识别图像中文字的所属语种</p>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+    <!-- 左列：上传区 -->
+    <div class="space-y-4">
+
+      <!-- 拖放上传 -->
+      <div class="card">
+        <h3 class="font-semibold text-gray-700 mb-4"><i class="fas fa-upload text-blue-400 mr-2"></i>上传图像</h3>
+
+        <div id="dropzone" onclick="document.getElementById('fileInput').click()">
+          <input type="file" id="fileInput" accept="image/*" onchange="onFileSelect(event)">
+          <i class="fas fa-cloud-arrow-up text-blue-300 text-4xl mb-3 block"></i>
+          <p class="text-gray-500 font-medium">拖放图片到此处，或点击选择文件</p>
+          <p class="text-sm text-gray-400 mt-2">支持 JPG / PNG / BMP / GIF / WebP / TIFF，最大 16 MB</p>
+        </div>
+
+        <!-- 预览 -->
+        <div id="previewArea" class="hidden mt-4">
+          <div class="relative rounded-xl overflow-hidden bg-gray-50 border border-gray-200" style="max-height:280px">
+            <img id="previewImg" src="" alt="预览" class="w-full h-full object-contain" style="max-height:280px">
+            <button onclick="clearFile()"
+              class="absolute top-2 right-2 w-7 h-7 bg-white/90 rounded-full flex items-center justify-center text-gray-500 hover:text-red-500 shadow-sm border border-gray-200">
+              <i class="fas fa-times text-xs"></i>
+            </button>
+          </div>
+          <div class="mt-2 flex items-center gap-2 text-sm text-gray-500">
+            <i class="fas fa-file-image text-blue-400"></i>
+            <span id="fileName" class="truncate flex-1">-</span>
+            <span id="fileSize" class="text-gray-400 flex-shrink-0">-</span>
+          </div>
+        </div>
+
+        <!-- 进度条 -->
+        <div id="progressArea" class="hidden mt-4">
+          <div class="flex justify-between text-xs text-gray-500 mb-1">
+            <span id="progressLabel">识别中...</span>
+            <span id="progressPct">0%</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" id="progressFill" style="width:0%"></div>
+          </div>
+        </div>
+
+        <!-- 权重选择 -->
+        <div class="mt-3" id="weightArea">
+          <label class="text-xs font-semibold text-gray-500 mb-1 block">
+            <i class="fas fa-weight-hanging text-violet-400 mr-1"></i>识别模型
+          </label>
+          <select id="weightSelect"
+                  class="w-full text-sm border border-gray-200 rounded-xl px-3 py-2 bg-white text-gray-700 outline-none focus:border-blue-400 transition">
+            <option value="">自动 (EasyOCR 通用模式)</option>
+          </select>
+        </div>
+
+        <!-- 操作按钮 -->
+        <div class="flex gap-3 mt-4" id="actionBtns">
+          <button class="btn-primary flex-1" id="recognizeBtn" onclick="startRecognize()" disabled>
+            <i class="fas fa-magnifying-glass"></i>开始识别
+          </button>
+          <button class="btn-secondary" onclick="clearFile()">
+            <i class="fas fa-rotate-left"></i>重置
+          </button>
+        </div>
+      </div>
+
+      <!-- 支持语种说明 -->
+      <div class="card">
+        <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-list text-violet-400 mr-2"></i>支持识别的语种</h3>
+        <div class="grid grid-cols-3 gap-2 text-xs" id="langList"></div>
+      </div>
+    </div>
+
+    <!-- 右列：识别结果 -->
+    <div id="resultCol">
+
+      <!-- 等待状态 -->
+      <div id="resultEmpty" class="card h-full flex flex-col items-center justify-center py-16 text-center">
+        <div class="w-20 h-20 rounded-full bg-blue-50 flex items-center justify-center mb-5">
+          <i class="fas fa-magnifying-glass text-blue-300 text-3xl"></i>
+        </div>
+        <p class="text-gray-400 font-medium">识别结果将在这里显示</p>
+        <p class="text-sm text-gray-300 mt-1">请上传图像并点击开始识别</p>
+      </div>
+
+      <!-- 加载中 -->
+      <div id="resultLoading" class="hidden card h-full flex flex-col items-center justify-center py-16">
+        <div class="relative w-20 h-20 mb-5">
+          <div class="absolute inset-0 rounded-full border-4 border-blue-100"></div>
+          <div class="absolute inset-0 rounded-full border-4 border-transparent border-t-blue-500 animate-spin"></div>
+          <div class="absolute inset-0 flex items-center justify-center">
+            <i class="fas fa-globe-asia text-blue-400 text-2xl"></i>
+          </div>
+        </div>
+        <p class="text-gray-600 font-medium">正在分析图像...</p>
+        <p class="text-sm text-gray-400 mt-1">AI 模型正在识别文字语种</p>
+      </div>
+
+      <!-- 结果展示 -->
+      <div id="resultContent" class="hidden space-y-4">
+
+        <!-- 主结果 -->
+        <div class="card">
+          <div class="flex items-start justify-between mb-4">
+            <h3 class="font-semibold text-gray-700"><i class="fas fa-check-circle text-green-500 mr-2"></i>识别结果</h3>
+            <span class="badge bg-green-100 text-green-700">识别成功</span>
+          </div>
+
+          <div class="flex items-center gap-4 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl border border-blue-100">
+            <div class="w-16 h-16 rounded-2xl bg-blue-600 flex items-center justify-center flex-shrink-0">
+              <i class="fas fa-language text-white text-2xl"></i>
+            </div>
+            <div>
+              <div class="text-2xl font-bold text-gray-800" id="resLangName">-</div>
+              <div class="text-sm text-gray-400" id="resLangEn">-</div>
+              <div class="flex items-center gap-2 mt-1.5">
+                <div class="conf-bar w-32">
+                  <div class="conf-fill bg-blue-500" id="resConfBar" style="width:0%"></div>
+                </div>
+                <span class="text-sm font-semibold text-blue-600" id="resConfPct">0%</span>
+                <span class="text-xs text-gray-400">置信度</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 语言概率分布 -->
+        <div class="card">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-chart-bar text-violet-400 mr-2"></i>语种概率分布</h3>
+          <div id="langProbs" class="space-y-2.5"></div>
+        </div>
+
+        <!-- 识别文本 -->
+        <div class="card" id="textCard">
+          <h3 class="font-semibold text-gray-700 mb-3"><i class="fas fa-align-left text-amber-400 mr-2"></i>识别文本</h3>
+          <div id="resText" class="bg-gray-50 rounded-xl p-4 text-sm text-gray-600 min-h-[80px] max-h-[200px] overflow-y-auto leading-relaxed whitespace-pre-wrap font-mono">-</div>
+        </div>
+
+        <!-- 操作按钮 -->
+        <div class="flex gap-3">
+          <button class="btn-primary flex-1" onclick="clearFile()">
+            <i class="fas fa-plus"></i>继续识别
+          </button>
+          <a id="viewHistoryBtn" href="history.html"
+             onclick="if(window.parent!==window){window.parent.loadPage(null,'history.html');return false;}"
+             class="btn-secondary">
+            <i class="fas fa-clock-rotate-left"></i>查看历史
+          </a>
+        </div>
+      </div>
+
+    </div><!-- /resultCol -->
+  </div><!-- /grid -->
+
+  <script>
+    const API = window.location.origin;
+
+    const user = JSON.parse(localStorage.getItem('c3f_user') || 'null');
+    if (!user) { localStorage.removeItem('c3f_user'); window.top.location.href = 'login.html'; }
+
+    // ── 加载可用 StarNet 权重 ──────────────────────────────────
+    async function loadWeights() {
+      try {
+        const res = await fetch(`${API}/api/weights`, { credentials: 'include' });
+        if (!res.ok) return;
+        const d = await res.json();
+        if (d.success && d.weights && d.weights.length > 0) {
+          const sel = document.getElementById('weightSelect');
+          d.weights.forEach(w => {
+            const opt = document.createElement('option');
+            opt.value       = w.filename;
+            opt.textContent = w.display;
+            sel.appendChild(opt);
+          });
+          document.getElementById('weightArea').style.display = '';
+        } else {
+          // No StarNet weights available — hide the selector
+          document.getElementById('weightArea').style.display = 'none';
+        }
+      } catch(e) {
+        document.getElementById('weightArea').style.display = 'none';
+      }
+    }
+    loadWeights();
+
+    // ── 支持语种列表 ─────────────────────────────────────────
+    const SUPPORTED_LANGS = [
+      '🇨🇳中文','🇺🇸英文','🇯🇵日文','🇰🇷韩文','🇸🇦阿拉伯文',
+      '🇫🇷法文','🇩🇪德文','🇪🇸西班牙文','🇷🇺俄文','🇵🇹葡萄牙文',
+      '🇮🇹意大利文','🇹🇭泰文'
+    ];
+    document.getElementById('langList').innerHTML = SUPPORTED_LANGS
+      .map(l => `<div class="bg-gray-50 rounded-lg px-2 py-1.5 text-gray-600 text-center">${l}</div>`)
+      .join('');
+
+    let selectedFile = null;
+
+    // ── 拖放 ────────────────────────────────────────────────
+    const dz = document.getElementById('dropzone');
+    dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('drag-over'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+    dz.addEventListener('drop', e => {
+      e.preventDefault(); dz.classList.remove('drag-over');
+      const f = e.dataTransfer.files[0];
+      if (f) setFile(f);
+    });
+
+    function onFileSelect(e) {
+      const f = e.target.files[0];
+      if (f) setFile(f);
+    }
+
+    function setFile(f) {
+      if (!f.type.startsWith('image/')) {
+        alert('请选择图片文件！'); return;
+      }
+      if (f.size > 16 * 1024 * 1024) {
+        alert('文件不能超过 16 MB！'); return;
+      }
+      selectedFile = f;
+      const reader = new FileReader();
+      reader.onload = e => {
+        document.getElementById('previewImg').src = e.target.result;
+        document.getElementById('previewArea').classList.remove('hidden');
+        document.getElementById('dropzone').style.display = 'none';
+      };
+      reader.readAsDataURL(f);
+      document.getElementById('fileName').textContent = f.name;
+      document.getElementById('fileSize').textContent = formatSize(f.size);
+      document.getElementById('recognizeBtn').disabled = false;
+      showState('empty');
+    }
+
+    function clearFile() {
+      selectedFile = null;
+      document.getElementById('fileInput').value = '';
+      document.getElementById('previewArea').classList.add('hidden');
+      document.getElementById('dropzone').style.display = '';
+      document.getElementById('recognizeBtn').disabled = true;
+      showState('empty');
+    }
+
+    function formatSize(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+      return (bytes/1024/1024).toFixed(1) + ' MB';
+    }
+
+    // ── 状态切换 ─────────────────────────────────────────────
+    function showState(state) {
+      document.getElementById('resultEmpty').classList.toggle('hidden',   state !== 'empty');
+      document.getElementById('resultLoading').classList.toggle('hidden', state !== 'loading');
+      document.getElementById('resultContent').classList.toggle('hidden', state !== 'result');
+    }
+
+    // ── 识别 ─────────────────────────────────────────────────
+    async function startRecognize() {
+      if (!selectedFile) return;
+      const btn = document.getElementById('recognizeBtn');
+      btn.disabled = true;
+      showState('loading');
+
+      const fd = new FormData();
+      fd.append('file', selectedFile);
+      const weight = document.getElementById('weightSelect').value;
+      if (weight) fd.append('weight', weight);
+
+      try {
+        const res = await fetch(`${API}/api/recognize`, {
+          method: 'POST', body: fd, credentials: 'include'
+        });
+        if (res.status === 401) { localStorage.removeItem('c3f_user'); window.top.location.href = 'login.html'; return; }
+        const d = await res.json();
+        if (d.success) {
+          renderResult(d);
+          showState('result');
+        } else {
+          alert('识别失败：' + (d.message || '未知错误'));
+          showState('empty');
+        }
+      } catch(e) {
+        alert('请求失败，请检查网络连接');
+        showState('empty');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    const PROB_COLORS = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316'];
+
+    function renderResult(d) {
+      document.getElementById('resLangName').textContent = d.language_name    || '-';
+      document.getElementById('resLangEn').textContent   = d.language_name_en || '-';
+      const conf = Math.min(100, Math.max(0, d.confidence || 0));
+      document.getElementById('resConfPct').textContent  = conf.toFixed(1) + '%';
+      document.getElementById('resConfBar').style.width  = conf + '%';
+
+      // 概率分布
+      const probs = d.all_languages || [];
+      const probHtml = probs.slice(0, 6).map((item, i) => {
+        const p = Math.min(100, Math.max(0, item.prob || 0));
+        return `<div>
+          <div class="flex justify-between text-xs text-gray-600 mb-1">
+            <span>${item.name_zh || item.lang || '-'}</span>
+            <span class="font-medium">${p.toFixed(1)}%</span>
+          </div>
+          <div class="conf-bar">
+            <div class="conf-fill" style="width:${p}%;background:${PROB_COLORS[i%PROB_COLORS.length]}"></div>
+          </div>
+        </div>`;
+      }).join('');
+      document.getElementById('langProbs').innerHTML = probHtml || '<p class="text-gray-400 text-sm">暂无概率数据</p>';
+
+      // 识别文本
+      const txt = (d.detected_text || '').trim();
+      document.getElementById('resText').textContent = txt || '（未检测到文字内容）';
+    }
+  </script>
+</body>
+</html>

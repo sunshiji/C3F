@@ -1,0 +1,1056 @@
+"""
+自然场景文种识别系统 - Flask 后端
+Natural Scene Text Language Recognition System - Backend
+"""
+
+import os
+import re
+import uuid
+import hashlib
+import json
+import logging
+import sqlite3
+from datetime import datetime, date
+
+from flask import Flask, request, jsonify, session, send_from_directory
+from flask_cors import CORS
+from werkzeug.utils import secure_filename
+
+import config
+
+# ── StarNet 推理模块（可选，依赖 torch / timm）──────────────────
+try:
+    from starnet_infer import classify_image as _starnet_classify
+    _STARNET_AVAILABLE = True
+except ImportError:
+    _STARNET_AVAILABLE = False
+    def _starnet_classify(*_args, **_kwargs):
+        raise RuntimeError('StarNet dependencies (torch/timm) are not installed')
+
+# ── 初始化 ────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+app.secret_key = config.SECRET_KEY
+app.config['MAX_CONTENT_LENGTH'] = config.MAX_CONTENT_MB * 1024 * 1024
+app.config['UPLOAD_FOLDER'] = config.UPLOAD_FOLDER
+
+CORS(app, supports_credentials=True, origins='*')
+
+os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
+
+# ── OCR 依赖（可选）────────────────────────────────────────────
+# Each EasyOCR Reader covers one script family (per-group compatibility
+# constraint).  Readers are created lazily on first use and cached.
+_ocr_readers = None   # list[easyocr.Reader] after first call, or []
+
+def get_ocr_readers():
+    """Return the list of initialised EasyOCR Reader objects.
+
+    Readers are created lazily on the first call and cached.  One Reader
+    is created per entry in config.OCR_LANG_GROUPS.  Groups that fail to
+    load (e.g. a model checkpoint version mismatch) are silently skipped
+    so that all remaining groups continue to work.
+
+    Model weights are loaded from config.OCR_MODEL_DIR (backend/models/)
+    when that directory exists and contains .pth files.  Otherwise
+    EasyOCR falls back to ~/.EasyOCR/model/ and may attempt to download.
+    """
+    global _ocr_readers
+    if _ocr_readers is None:
+        _ocr_readers = []
+        try:
+            import easyocr
+            model_dir = config.OCR_MODEL_DIR
+            # Disable download when a local model directory is configured.
+            allow_download = model_dir is None
+            base_kwargs = {
+                'gpu': config.OCR_USE_GPU,
+                'verbose': False,
+                'download_enabled': allow_download,
+            }
+            if model_dir:
+                base_kwargs['model_storage_directory'] = model_dir
+                logger.info('OCR model directory: %s', model_dir)
+
+            for group in config.OCR_LANG_GROUPS:
+                try:
+                    reader = easyocr.Reader(group, **base_kwargs)
+                    _ocr_readers.append(reader)
+                    logger.info('EasyOCR reader initialised (langs: %s)', ', '.join(group))
+                except Exception as e:
+                    logger.warning(
+                        'EasyOCR reader failed for group %s — '
+                        'recognition for these languages will be unavailable: %s',
+                        group, e)
+        except Exception as e:
+            logger.warning('EasyOCR unavailable: %s — OCR disabled', e)
+    return _ocr_readers
+
+
+def _preprocess_for_ocr(filepath):
+    """Upscale small images and enhance contrast to improve EasyOCR accuracy.
+
+    Returns the path to a (possibly new) temp file.  When a temp file is
+    created, the caller is responsible for deleting it.  If preprocessing
+    fails the original *filepath* is returned unchanged.
+    """
+    try:
+        from PIL import Image, ImageEnhance
+        img = Image.open(filepath)
+        if img.mode not in ('RGB', 'L'):
+            img = img.convert('RGB')
+        w, h = img.size
+        # Upscale if the shorter side is too small — EasyOCR performs poorly
+        # on images narrower/shorter than ~640 px.
+        if min(w, h) < 640:
+            scale = 640 / min(w, h)
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        # Moderate contrast boost helps distinguish text from background.
+        img = ImageEnhance.Contrast(img).enhance(1.4)
+        import tempfile
+        suffix = os.path.splitext(filepath)[1] or '.png'
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=suffix, delete=False, dir=config.UPLOAD_FOLDER)
+        tmp.close()
+        img.save(tmp.name)
+        return tmp.name
+    except Exception:
+        return filepath
+
+
+# Minimum confidence score (0–1) for an OCR text region to be kept.
+# Regions below this threshold are typically garbled output from a
+# wrong-script reader and should be discarded.
+_OCR_MIN_CONFIDENCE = 0.2
+
+# Overlap fraction (relative to the smaller box) above which two
+# detections from different script-group readers are considered
+# duplicates of the same text region.
+_OCR_OVERLAP_THRESHOLD = 0.4
+
+
+def _sort_ocr_results(results):
+    """Sort EasyOCR results in reading order and remove low-confidence/duplicate entries.
+
+    Steps:
+    1. Drop results whose confidence falls below MIN_CONF.
+    2. Sort remaining results top-to-bottom, left-to-right.
+    3. Deduplicate: when two boxes overlap significantly, keep the one with
+       higher confidence (handles the same text being seen by multiple
+       script-group readers).
+    """
+    def _rect(bbox):
+        xs = [p[0] for p in bbox]
+        ys = [p[1] for p in bbox]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    def _iou_min(b1, b2):
+        """Overlap fraction relative to the *smaller* bounding box."""
+        ax1, ay1, ax2, ay2 = _rect(b1)
+        bx1, by1, bx2, by2 = _rect(b2)
+        ix = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+        iy = max(0.0, min(ay2, by2) - max(ay1, by1))
+        inter = ix * iy
+        if inter == 0.0:
+            return 0.0
+        a1 = max(1, (ax2 - ax1) * (ay2 - ay1))
+        a2 = max(1, (bx2 - bx1) * (by2 - by1))
+        return inter / min(a1, a2)
+
+    filtered = [r for r in results if r[2] >= _OCR_MIN_CONFIDENCE]
+    filtered.sort(key=lambda r: (min(p[1] for p in r[0]), min(p[0] for p in r[0])))
+
+    kept = []
+    for r in filtered:
+        duplicate = False
+        for i, k in enumerate(kept):
+            if _iou_min(r[0], k[0]) >= _OCR_OVERLAP_THRESHOLD:
+                if r[2] > k[2]:
+                    kept[i] = r
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(r)
+    return kept
+
+# ── 语言代码 → 中文名称 ────────────────────────────────────────
+LANGUAGE_NAMES = {
+    'zh':    ('中文',        'Chinese'),
+    'zh-cn': ('中文(简体)',  'Chinese Simplified'),
+    'zh-tw': ('中文(繁体)',  'Chinese Traditional'),
+    'en':    ('英文',        'English'),
+    'ja':    ('日文',        'Japanese'),
+    'ko':    ('韩文',        'Korean'),
+    'ar':    ('阿拉伯文',    'Arabic'),
+    'fr':    ('法文',        'French'),
+    'de':    ('德文',        'German'),
+    'es':    ('西班牙文',    'Spanish'),
+    'ru':    ('俄文',        'Russian'),
+    'pt':    ('葡萄牙文',    'Portuguese'),
+    'it':    ('意大利文',    'Italian'),
+    'th':    ('泰文',        'Thai'),
+    'vi':    ('越南文',      'Vietnamese'),
+    'hi':    ('印地文',      'Hindi'),
+    'tr':    ('土耳其文',    'Turkish'),
+    'nl':    ('荷兰文',      'Dutch'),
+    'pl':    ('波兰文',      'Polish'),
+    'sv':    ('瑞典文',      'Swedish'),
+    'da':    ('丹麦文',      'Danish'),
+    'fi':    ('芬兰文',      'Finnish'),
+    'el':    ('希腊文',      'Greek'),
+    'he':    ('希伯来文',    'Hebrew'),
+    'fa':    ('波斯文',      'Persian'),
+    'uk':    ('乌克兰文',    'Ukrainian'),
+    'id':    ('印尼文',      'Indonesian'),
+    'ms':    ('马来文',      'Malay'),
+    'bg':    ('保加利亚文',  'Bulgarian'),
+    'hr':    ('克罗地亚文',  'Croatian'),
+    'cs':    ('捷克文',      'Czech'),
+    'sk':    ('斯洛伐克文',  'Slovak'),
+    'hu':    ('匈牙利文',    'Hungarian'),
+    'ro':    ('罗马尼亚文',  'Romanian'),
+    'no':    ('挪威文',      'Norwegian'),
+    'ca':    ('加泰罗尼亚文','Catalan'),
+    'sr':    ('塞尔维亚文',  'Serbian'),
+    'bn':    ('孟加拉文',    'Bengali'),
+    'gu':    ('古吉拉特文',  'Gujarati'),
+    'pa':    ('旁遮普文',    'Punjabi'),
+    'kn':    ('卡纳达文',    'Kannada'),
+    'ta':    ('泰米尔文',    'Tamil'),
+    'te':    ('泰卢固文',    'Telugu'),
+    'or':    ('奥里亚文',    'Odia'),
+    'mn':    ('蒙古文',      'Mongolian'),
+    'bo':    ('藏文',        'Tibetan'),
+    'km':    ('柬埔寨文',    'Khmer'),
+    'la':    ('拉丁文',      'Latin'),
+    'mr':    ('马拉地文',    'Marathi'),
+    'ne':    ('尼泊尔文',    'Nepali'),
+    'unknown': ('未知语言',  'Unknown'),
+    'symbols': ('符号',      'Symbols'),
+    'latin':   ('拉丁文',    'Latin'),
+}
+
+def get_lang_name(code):
+    code = (code or '').lower()
+    return LANGUAGE_NAMES.get(code, (f'其他({code})', f'Other({code})'))
+
+# ── Unicode 字符脚本检测 ────────────────────────────────────────
+# Maps Unicode code-point ranges to ISO 639-1 language codes.
+# Hiragana/Katakana are listed before CJK so Japanese is detected first
+# (kanji alone is ambiguous between Chinese and Japanese).
+_SCRIPT_RANGES = (
+    (0x3040, 0x309F, 'ja'),   # Hiragana
+    (0x30A0, 0x30FF, 'ja'),   # Katakana
+    (0x31F0, 0x31FF, 'ja'),   # Katakana Phonetic Extensions
+    (0xAC00, 0xD7AF, 'ko'),   # Hangul Syllables
+    (0x1100, 0x11FF, 'ko'),   # Hangul Jamo
+    (0xA960, 0xA97F, 'ko'),   # Hangul Jamo Extended-A
+    (0x4E00, 0x9FFF, 'zh'),   # CJK Unified Ideographs
+    (0x3400, 0x4DBF, 'zh'),   # CJK Extension A
+    (0xF900, 0xFAFF, 'zh'),   # CJK Compatibility Ideographs
+    (0x0600, 0x06FF, 'ar'),   # Arabic
+    (0x0750, 0x077F, 'ar'),   # Arabic Supplement
+    (0x08A0, 0x08FF, 'ar'),   # Arabic Extended-A
+    (0xFB50, 0xFDFF, 'ar'),   # Arabic Presentation Forms-A
+    (0xFE70, 0xFEFF, 'ar'),   # Arabic Presentation Forms-B
+    (0x0400, 0x04FF, 'ru'),   # Cyrillic
+    (0x0500, 0x052F, 'ru'),   # Cyrillic Supplement
+    (0x0900, 0x097F, 'hi'),   # Devanagari (Hindi / Sanskrit)
+    (0x0980, 0x09FF, 'bn'),   # Bengali
+    (0x0A80, 0x0AFF, 'gu'),   # Gujarati
+    (0x0A00, 0x0A7F, 'pa'),   # Gurmukhi (Punjabi)
+    (0x0C80, 0x0CFF, 'kn'),   # Kannada
+    (0x0B80, 0x0BFF, 'ta'),   # Tamil
+    (0x0C00, 0x0C7F, 'te'),   # Telugu
+    (0x0B00, 0x0B7F, 'or'),   # Odia
+    (0x0E00, 0x0E7F, 'th'),   # Thai
+    (0x0F00, 0x0FFF, 'bo'),   # Tibetan
+    (0x1800, 0x18AF, 'mn'),   # Mongolian
+    (0x0370, 0x03FF, 'el'),   # Greek
+    (0x0590, 0x05FF, 'he'),   # Hebrew
+    (0x1780, 0x17FF, 'km'),   # Khmer
+)
+
+# Minimum fraction of alphabetic characters that must belong to a script
+# before it is reported as the dominant script.  A 15 % floor prevents a
+# handful of stray characters from overriding a predominantly Latin result.
+_SCRIPT_DETECTION_THRESHOLD = 0.15
+
+# Minimum fraction of alphabetic characters that must be Hiragana/Katakana
+# to classify text as Japanese (kana-unique to Japanese; shared kanji are
+# then absorbed into the Japanese total).  5 % covers even lightly-annotated
+# texts while avoiding mis-classifying predominantly-Chinese text that
+# happens to contain a single kana character.
+_SCRIPT_JA_KANA_MIN_RATIO = 0.05
+
+def _detect_script(text):
+    """Detect the dominant Unicode script in *text*.
+
+    Returns (lang_code, confidence_pct):
+      - non-Latin script clearly dominant  → (iso_code, pct)
+      - text is Latin / ASCII              → ('latin', pct)
+      - text is predominantly symbols/digits with few alphabetic chars
+                                           → ('symbols', pct)
+      - no alphabetic characters found     → (None, 0.0)
+
+    Japanese is identified when Hiragana/Katakana characters make up at
+    least _SCRIPT_JA_KANA_MIN_RATIO of alphabetic characters; shared CJK
+    ideographs are then counted toward the Japanese total.
+
+    Supported scripts via Unicode ranges:
+      CJK (zh/ja/ko), Arabic (ar), Cyrillic (ru), Devanagari (hi),
+      Bengali (bn), Gujarati (gu), Gurmukhi/Punjabi (pa), Kannada (kn),
+      Tamil (ta), Telugu (te), Oriya (or), Thai (th), Tibetan (bo),
+      Mongolian (mn), Greek (el), Hebrew (he), Khmer (km).
+    """
+    counts = {}
+    latin_count = 0
+    total_alpha = 0
+    for ch in text:
+        if not ch.isalpha():
+            continue
+        total_alpha += 1
+        cp = ord(ch)
+        matched = False
+        for start, end, lang in _SCRIPT_RANGES:
+            if start <= cp <= end:
+                counts[lang] = counts.get(lang, 0) + 1
+                matched = True
+                break
+        if not matched and ch.isascii():
+            latin_count += 1
+
+    # Symbols detection: if non-space chars vastly outnumber alphabetic chars,
+    # classify the text as a symbols/numeric category.
+    non_space = sum(1 for c in text if not c.isspace())
+    if non_space > 0 and total_alpha == 0:
+        return 'symbols', 100.0
+    if non_space >= 4 and total_alpha / non_space < 0.25:
+        return 'symbols', round((1 - total_alpha / non_space) * 100, 1)
+
+    if total_alpha == 0:
+        return None, 0.0
+
+    # Japanese: Hiragana/Katakana are unique to Japanese — absorb shared
+    # CJK ideographs only when kana meets the minimum ratio threshold.
+    ja_kana = counts.get('ja', 0)
+    if ja_kana / total_alpha >= _SCRIPT_JA_KANA_MIN_RATIO:
+        ja_total = ja_kana + counts.get('zh', 0)
+        return 'ja', round(ja_total / total_alpha * 100, 1)
+
+    if counts:
+        top_lang = max(counts, key=counts.get)
+        top_ratio = counts[top_lang] / total_alpha
+        if top_ratio >= _SCRIPT_DETECTION_THRESHOLD:
+            return top_lang, round(top_ratio * 100, 1)
+
+    if latin_count / total_alpha >= _SCRIPT_DETECTION_THRESHOLD:
+        return 'latin', round(latin_count / total_alpha * 100, 1)
+
+    return None, 0.0
+
+# ── 数据库 ─────────────────────────────────────────────────────
+def get_db():
+    """Return a per-request SQLite connection with dict-style row factory.
+    Each call creates a new connection, so no cross-thread sharing occurs."""
+    conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
+    conn.row_factory = lambda c, r: dict(zip([col[0] for col in c.description], r))
+    conn.execute('PRAGMA foreign_keys = ON')
+    return conn
+
+def init_db():
+    """Create tables and seed initial data (idempotent)."""
+    conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
+    cur = conn.cursor()
+    cur.executescript('''
+        PRAGMA foreign_keys = ON;
+
+        CREATE TABLE IF NOT EXISTS users (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            username    TEXT    NOT NULL UNIQUE,
+            password    TEXT    NOT NULL,
+            email       TEXT    DEFAULT NULL,
+            role        TEXT    NOT NULL DEFAULT 'user',
+            avatar      TEXT    DEFAULT NULL,
+            is_active   INTEGER NOT NULL DEFAULT 1,
+            last_login  TEXT    DEFAULT NULL,
+            created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+
+        CREATE TABLE IF NOT EXISTS records (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id             INTEGER NOT NULL,
+            filename            TEXT    NOT NULL,
+            original_filename   TEXT    DEFAULT NULL,
+            file_size           INTEGER DEFAULT NULL,
+            detected_language   TEXT    DEFAULT NULL,
+            language_name       TEXT    DEFAULT NULL,
+            language_name_en    TEXT    DEFAULT NULL,
+            confidence          REAL    DEFAULT 0,
+            detected_text       TEXT    DEFAULT NULL,
+            all_languages       TEXT    DEFAULT NULL,
+            status              TEXT    NOT NULL DEFAULT 'success',
+            error_msg           TEXT    DEFAULT NULL,
+            created_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS system_config (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            config_key  TEXT    NOT NULL UNIQUE,
+            config_val  TEXT    DEFAULT NULL,
+            description TEXT    DEFAULT NULL,
+            updated_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+    ''')
+
+    # Seed users (INSERT OR IGNORE = safe to run multiple times)
+    admin_pw = hashlib.md5('admin123'.encode()).hexdigest()
+    user_pw  = hashlib.md5('user123'.encode()).hexdigest()
+    cur.execute(
+        "INSERT OR IGNORE INTO users (username, password, email, role) VALUES (?,?,?,?)",
+        ('admin', admin_pw, 'admin@c3f.local', 'admin')
+    )
+    cur.execute(
+        "INSERT OR IGNORE INTO users (username, password, email, role) VALUES (?,?,?,?)",
+        ('user1', user_pw, 'user1@c3f.local', 'user')
+    )
+
+    # Seed system config
+    for key, val, desc in [
+        ('max_file_size_mb', '16',   '最大上传文件大小(MB)'),
+        ('allowed_types',    'jpg,jpeg,png,bmp,gif,webp,tiff', '允许的图片类型'),
+        ('ocr_engine',       'easyocr', 'OCR引擎'),
+        ('site_name',        '自然场景文种识别系统', '网站名称'),
+    ]:
+        cur.execute(
+            "INSERT OR IGNORE INTO system_config (config_key, config_val, description) VALUES (?,?,?)",
+            (key, val, desc)
+        )
+
+    conn.commit()
+    conn.close()
+    logger.info('Database initialized ✓  path: %s', config.DB_PATH)
+
+# init_db() uses CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE, so it is fully
+# idempotent and safe to call on every worker startup or concurrent invocation.
+init_db()
+
+# ── 工具函数 ───────────────────────────────────────────────────
+def md5(s: str) -> str:
+    return hashlib.md5(s.encode()).hexdigest()
+
+def allowed_file(filename: str) -> bool:
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in config.ALLOWED_EXTENSIONS
+
+def current_user():
+    return session.get('user_id'), session.get('username'), session.get('role')
+
+def require_login(fn):
+    from functools import wraps
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        uid, uname, role = current_user()
+        if not uid:
+            return jsonify({'success': False, 'message': '请先登录'}), 401
+        return fn(*args, **kwargs)
+    return wrapper
+
+# ── 认证接口 ───────────────────────────────────────────────────
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json(force=True)
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or ''
+
+    if not username or not password:
+        return jsonify({'success': False, 'message': '用户名和密码不能为空'}), 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, username, role FROM users '
+            'WHERE username=? AND password=? AND is_active=1',
+            (username, md5(password))
+        )
+        user = cur.fetchone()
+        if user:
+            cur.execute(
+                "UPDATE users SET last_login=datetime('now','localtime') WHERE id=?",
+                (user['id'],)
+            )
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f'Login DB error: {e}')
+        return jsonify({'success': False, 'message': '数据库错误，请稍后重试'}), 500
+
+    if not user:
+        return jsonify({'success': False, 'message': '用户名或密码错误'}), 401
+
+    session['user_id']  = user['id']
+    session['username'] = user['username']
+    session['role']     = user['role']
+
+    return jsonify({
+        'success':  True,
+        'user_id':  user['id'],
+        'username': user['username'],
+        'role':     user['role'],
+    })
+
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    session.clear()
+    return jsonify({'success': True})
+
+@app.route('/api/check_auth', methods=['GET'])
+def check_auth():
+    uid, uname, role = current_user()
+    if uid:
+        return jsonify({'logged_in': True, 'username': uname, 'role': role})
+    return jsonify({'logged_in': False}), 401
+
+# ── 统计信息 ───────────────────────────────────────────────────
+@app.route('/api/stats', methods=['GET'])
+@require_login
+def get_stats():
+    uid, _, role = current_user()
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        # 总识别次数
+        q_total = 'SELECT COUNT(*) AS cnt FROM records'
+        q_today = "SELECT COUNT(*) AS cnt FROM records WHERE date(created_at)=date('now','localtime')"
+        q_lang  = 'SELECT COUNT(DISTINCT detected_language) AS cnt FROM records'
+        q_week  = (
+            "SELECT date(created_at) AS day, COUNT(*) AS cnt "
+            "FROM records WHERE date(created_at) >= date('now','-6 days','localtime') "
+            "GROUP BY day ORDER BY day"
+        )
+        q_dist  = (
+            "SELECT language_name, COUNT(*) AS cnt FROM records "
+            "WHERE language_name IS NOT NULL "
+            "GROUP BY language_name ORDER BY cnt DESC LIMIT 8"
+        )
+        q_recent = (
+            "SELECT r.id, r.original_filename, r.language_name, r.confidence, "
+            "r.created_at, u.username "
+            "FROM records r JOIN users u ON r.user_id=u.id "
+            "ORDER BY r.created_at DESC LIMIT 5"
+        )
+        if role != 'admin':
+            q_total  = q_total  + ' WHERE user_id=?'
+            q_today  = q_today  + ' AND user_id=?'
+            q_lang   = q_lang   + ' WHERE user_id=?'
+            q_week   = q_week.replace("WHERE date(created_at)", "WHERE user_id=? AND date(created_at)")
+            q_dist   = q_dist.replace('WHERE language_name', 'WHERE user_id=? AND language_name')
+            q_recent = q_recent.replace('ORDER BY r.created_at', 'WHERE r.user_id=? ORDER BY r.created_at')
+            args = (uid,)
+        else:
+            args = ()
+
+        cur.execute(q_total, args);  total  = cur.fetchone()['cnt']
+        cur.execute(q_today, args);  today  = cur.fetchone()['cnt']
+        cur.execute(q_lang,  args);  langs  = cur.fetchone()['cnt']
+        cur.execute(q_week,  args);  week   = cur.fetchall()
+        cur.execute(q_dist,  args);  dist   = cur.fetchall()
+        cur.execute(q_recent,args);  recent = cur.fetchall()
+        conn.close()
+
+        # 序列化日期
+        for row in week:
+            row['day'] = str(row['day'])
+        for row in recent:
+            row['created_at'] = str(row['created_at'])
+
+        return jsonify({
+            'total':   total,
+            'today':   today,
+            'langs':   langs,
+            'week':    week,
+            'dist':    dist,
+            'recent':  recent,
+        })
+    except Exception as e:
+        logger.error(f'Stats error: {e}')
+        return jsonify({'success': False, 'message': '获取统计失败'}), 500
+
+# ── 图像识别 ───────────────────────────────────────────────────
+# 无 OCR 文本时的演示用默认候选语言（仅占位，非真实识别结果）
+_FALLBACK_LANG_CODE   = 'en'
+_FALLBACK_CONFIDENCE  = 60.0
+_FALLBACK_ALL_LANGS   = [
+    {'lang': 'en', 'name_zh': '英文',  'name_en': 'English',  'prob': 60.0},
+    {'lang': 'zh', 'name_zh': '中文',  'name_en': 'Chinese',  'prob': 25.0},
+    {'lang': 'ja', 'name_zh': '日文',  'name_en': 'Japanese', 'prob': 15.0},
+]
+
+@app.route('/api/weights', methods=['GET'])
+@require_login
+def list_weights():
+    """List available StarNet .pth weight files from STARNET_WEIGHTS_DIR."""
+    weights_dir = config.STARNET_WEIGHTS_DIR
+    if not os.path.isdir(weights_dir):
+        return jsonify({'success': True, 'weights': []})
+    weights = []
+    for fname in sorted(os.listdir(weights_dir)):
+        if fname.lower().endswith(('.pth', '.pt')):
+            weights.append({
+                'filename': fname,
+                'display':  os.path.splitext(fname)[0],
+            })
+    return jsonify({'success': True, 'weights': weights})
+
+
+@app.route('/api/recognize', methods=['POST'])
+@require_login
+def recognize():
+    uid, _, _ = current_user()
+
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'message': '未找到上传文件'}), 400
+
+    f = request.files['file']
+    if f.filename == '':
+        return jsonify({'success': False, 'message': '文件名为空'}), 400
+    if not allowed_file(f.filename):
+        return jsonify({'success': False, 'message': '不支持的文件格式'}), 400
+
+    # 保存文件
+    ext      = f.filename.rsplit('.', 1)[1].lower()
+    stored   = f'{uuid.uuid4().hex}.{ext}'
+    filepath = os.path.join(config.UPLOAD_FOLDER, stored)
+    f.save(filepath)
+    file_size = os.path.getsize(filepath)
+
+    # 读取可选的 StarNet 权重文件名（basename only，防止路径穿越）
+    weight_name = os.path.basename((request.form.get('weight') or '').strip())
+
+    # OCR + 语种识别
+    detected_text = ''
+    lang_code     = 'unknown'
+    confidence    = 0.0
+    all_langs     = []
+
+    try:
+        if weight_name:
+            # ── StarNet 路径：直接用图像分类模型识别语种 ──────────
+            # Validate extension to prevent referencing non-model files
+            if not weight_name.lower().endswith(('.pth', '.pt')):
+                return jsonify({'success': False,
+                                'message': '权重文件格式无效，仅支持 .pth / .pt'}), 400
+            weight_path = os.path.join(config.STARNET_WEIGHTS_DIR, weight_name)
+            if not os.path.isfile(weight_path):
+                return jsonify({'success': False,
+                                'message': f'权重文件不存在: {weight_name}'}), 400
+            result     = _starnet_classify(filepath, weight_path)
+            lang_code  = result['lang_code']
+            confidence = result['confidence']
+            all_langs  = result['all_langs']
+            # Fill in localised language names from the master map
+            for item in all_langs:
+                zh, en = get_lang_name(item['lang'])
+                item['name_zh'] = zh
+                item['name_en'] = en
+        else:
+            # ── EasyOCR 路径：提取文字后再判断语种 ───────────────
+            readers = get_ocr_readers()
+            if readers:
+                # Preprocess image (upscale small images, boost contrast) then
+                # run every script-group reader and merge results.
+                proc_path = _preprocess_for_ocr(filepath)
+                try:
+                    all_results = []
+                    for reader in readers:
+                        all_results.extend(reader.readtext(proc_path))
+                finally:
+                    if proc_path != filepath:
+                        try:
+                            os.unlink(proc_path)
+                        except OSError:
+                            pass
+                # Sort into reading order and remove duplicates from overlapping readers.
+                all_results = _sort_ocr_results(all_results)
+                texts   = [r[1] for r in all_results]
+                scores  = [r[2] for r in all_results]
+                detected_text = ' '.join(texts)
+                if scores:
+                    confidence = round(sum(scores) / len(scores) * 100, 2)
+            else:
+                # 尝试 pytesseract
+                try:
+                    from PIL import Image
+                    import pytesseract
+                    img = Image.open(filepath)
+                    detected_text = pytesseract.image_to_string(img)
+                except Exception:
+                    detected_text = ''
+
+            if detected_text.strip():
+                # Step 1: Unicode script detection — reliable for all non-Latin
+                # scripts regardless of text length or langdetect biases.
+                # Also detects symbols/numeric text.
+                script_lang, script_conf = _detect_script(detected_text)
+
+                if script_lang == 'symbols':
+                    # Text is predominantly symbols/digits — no language applicable.
+                    lang_code  = 'symbols'
+                    confidence = script_conf
+                    zh, en = get_lang_name('symbols')
+                    all_langs = [{'lang': 'symbols', 'name_zh': zh,
+                                  'name_en': en, 'prob': script_conf}]
+                elif script_lang and script_lang != 'latin':
+                    # Non-Latin script identified from character ranges —
+                    # no further detection needed.
+                    lang_code  = script_lang
+                    confidence = script_conf
+                    zh, en = get_lang_name(lang_code)
+                    all_langs = [{'lang': lang_code, 'name_zh': zh,
+                                  'name_en': en, 'prob': script_conf}]
+                else:
+                    # Latin-script or ambiguous: use langdetect to distinguish
+                    # between English, French, German, Spanish, etc.
+                    try:
+                        from langdetect import detect, detect_langs
+                        lang_code = detect(detected_text)
+                        raw_langs = detect_langs(detected_text)
+                        all_langs = [
+                            {'lang': str(l).split(':')[0],
+                             'prob': round(float(str(l).split(':')[1]) * 100, 1)}
+                            for l in raw_langs
+                        ]
+                        for item in all_langs:
+                            zh, en = get_lang_name(item['lang'])
+                            item['name_zh'] = zh
+                            item['name_en'] = en
+                        top = next((l for l in all_langs if l['lang'] == lang_code), None)
+                        if top:
+                            confidence = top['prob']
+                    except Exception as e:
+                        logger.warning(f'langdetect error: {e}')
+                        if script_lang == 'latin':
+                            # Fallback: Latin text but langdetect failed
+                            lang_code  = 'en'
+                            confidence = 50.0
+                            zh, en = get_lang_name('en')
+                            all_langs = [{'lang': 'en', 'name_zh': zh,
+                                          'name_en': en, 'prob': 50.0}]
+            else:
+                # 无文本时根据图像统计模拟（演示用）
+                lang_code  = _FALLBACK_LANG_CODE
+                confidence = _FALLBACK_CONFIDENCE
+                all_langs  = [dict(item) for item in _FALLBACK_ALL_LANGS]
+
+    except Exception as e:
+        logger.error(f'Recognition error: {e}')
+        lang_code  = 'unknown'
+        confidence = 0.0
+
+    zh_name, en_name = get_lang_name(lang_code)
+
+    # 写入数据库
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            '''INSERT INTO records
+               (user_id, filename, original_filename, file_size,
+                detected_language, language_name, language_name_en,
+                confidence, detected_text, all_languages, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,'success')''',
+            (uid, stored, f.filename, file_size,
+             lang_code, zh_name, en_name,
+             confidence, detected_text,
+             json.dumps(all_langs, ensure_ascii=False))
+        )
+        record_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f'DB insert error: {e}')
+        record_id = None
+
+    return jsonify({
+        'success':          True,
+        'record_id':        record_id,
+        'filename':         stored,
+        'original_filename':f.filename,
+        'detected_language':lang_code,
+        'language_name':    zh_name,
+        'language_name_en': en_name,
+        'confidence':       confidence,
+        'detected_text':    detected_text,
+        'all_languages':    all_langs,
+        'image_url':        f'/uploads/{stored}',
+    })
+
+# ── 历史记录 ───────────────────────────────────────────────────
+@app.route('/api/history', methods=['GET'])
+@require_login
+def get_history():
+    uid, _, role = current_user()
+    page     = max(1, int(request.args.get('page', 1)))
+    per_page = max(1, min(50, int(request.args.get('per_page', 10))))
+    search   = request.args.get('search', '').strip()
+    language = request.args.get('language', '').strip()
+    # Allowlist: only accept known language codes (letters, digits, hyphen, max 10 chars)
+    if language and not re.match(r'^[a-z]{2,10}(-[a-z]{2,4})?$', language):
+        language = ''
+    offset   = (page - 1) * per_page
+
+    where_parts = []
+    params      = []
+    if role != 'admin':
+        where_parts.append('r.user_id=?');  params.append(uid)
+    if search:
+        where_parts.append('(r.original_filename LIKE ? OR r.detected_text LIKE ?)')
+        params += [f'%{search}%', f'%{search}%']
+    if language:
+        where_parts.append('r.detected_language=?');  params.append(language)
+
+    where_sql = ('WHERE ' + ' AND '.join(where_parts)) if where_parts else ''
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            f'SELECT COUNT(*) AS cnt FROM records r {where_sql}', params
+        )
+        total = cur.fetchone()['cnt']
+
+        cur.execute(
+            f'''SELECT r.id, r.filename, r.original_filename, r.file_size,
+                       r.detected_language, r.language_name, r.confidence,
+                       r.detected_text, r.status, r.created_at, u.username
+                FROM records r JOIN users u ON r.user_id=u.id
+                {where_sql}
+                ORDER BY r.created_at DESC
+                LIMIT ? OFFSET ?''',
+            params + [per_page, offset]
+        )
+        rows = cur.fetchall()
+        conn.close()
+
+        for row in rows:
+            row['created_at'] = str(row['created_at'])
+            row['image_url']  = f'/uploads/{row["filename"]}'
+
+        return jsonify({
+            'success':  True,
+            'records':  rows,
+            'total':    total,
+            'page':     page,
+            'per_page': per_page,
+            'pages':    (total + per_page - 1) // per_page,
+        })
+    except Exception as e:
+        logger.error(f'History error: {e}')
+        return jsonify({'success': False, 'message': '获取历史记录失败'}), 500
+
+@app.route('/api/history/<int:record_id>', methods=['DELETE'])
+@require_login
+def delete_record(record_id):
+    uid, _, role = current_user()
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        if role == 'admin':
+            cur.execute('SELECT filename FROM records WHERE id=?', (record_id,))
+        else:
+            cur.execute('SELECT filename FROM records WHERE id=? AND user_id=?',
+                        (record_id, uid))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({'success': False, 'message': '记录不存在'}), 404
+        # 删除文件
+        fp = os.path.join(config.UPLOAD_FOLDER, row['filename'])
+        if os.path.exists(fp):
+            os.remove(fp)
+        cur.execute('DELETE FROM records WHERE id=?', (record_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f'Delete record error: {e}')
+        return jsonify({'success': False, 'message': '删除失败'}), 500
+
+# ── 用户管理 ───────────────────────────────────────────────────
+@app.route('/api/profile', methods=['GET'])
+@require_login
+def get_profile():
+    uid, _, _ = current_user()
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, username, email, role, created_at, last_login FROM users WHERE id=?',
+            (uid,)
+        )
+        user = cur.fetchone()
+        conn.close()
+        if user:
+            user['created_at']  = str(user['created_at'])
+            user['last_login']  = str(user['last_login']) if user['last_login'] else None
+        return jsonify({'success': True, 'user': user})
+    except Exception as e:
+        logger.error(f'Profile error: {e}')
+        return jsonify({'success': False, 'message': '获取用户信息失败'}), 500
+
+@app.route('/api/profile', methods=['PUT'])
+@require_login
+def update_profile():
+    uid, _, _ = current_user()
+    data  = request.get_json(force=True)
+    email = (data.get('email') or '').strip()
+    old_pw = data.get('old_password') or ''
+    new_pw = data.get('new_password') or ''
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        if new_pw:
+            cur.execute('SELECT password FROM users WHERE id=?', (uid,))
+            row = cur.fetchone()
+            if row['password'] != md5(old_pw):
+                conn.close()
+                return jsonify({'success': False, 'message': '原密码错误'}), 400
+            cur.execute('UPDATE users SET password=?, email=? WHERE id=?',
+                        (md5(new_pw), email, uid))
+        else:
+            cur.execute('UPDATE users SET email=? WHERE id=?', (email, uid))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'message': '更新成功'})
+    except Exception as e:
+        logger.error(f'Update profile error: {e}')
+        return jsonify({'success': False, 'message': '更新失败'}), 500
+
+@app.route('/api/users', methods=['GET'])
+@require_login
+def list_users():
+    _, _, role = current_user()
+    if role != 'admin':
+        return jsonify({'success': False, 'message': '权限不足'}), 403
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, username, email, role, is_active, created_at, last_login FROM users'
+        )
+        users = cur.fetchall()
+        conn.close()
+        for u in users:
+            u['created_at'] = str(u['created_at'])
+            u['last_login'] = str(u['last_login']) if u['last_login'] else None
+        return jsonify({'success': True, 'users': users})
+    except Exception as e:
+        logger.error(f'List users error: {e}')
+        return jsonify({'success': False, 'message': '获取用户列表失败'}), 500
+
+@app.route('/api/users', methods=['POST'])
+@require_login
+def create_user():
+    _, _, role = current_user()
+    if role != 'admin':
+        return jsonify({'success': False, 'message': '权限不足'}), 403
+    data     = request.get_json(force=True)
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or ''
+    email    = (data.get('email') or '').strip()
+    u_role   = data.get('role', 'user')
+    if not username or not password:
+        return jsonify({'success': False, 'message': '用户名和密码不能为空'}), 400
+    conn = None
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute('INSERT INTO users (username, password, email, role) VALUES (?,?,?,?)',
+                    (username, md5(password), email, u_role))
+        conn.commit()
+        return jsonify({'success': True, 'message': '创建成功'})
+    except sqlite3.IntegrityError:
+        return jsonify({'success': False, 'message': '用户名已存在'}), 409
+    except Exception as e:
+        logger.error(f'Create user error: {e}')
+        return jsonify({'success': False, 'message': '创建失败'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+@app.route('/api/users/<int:user_id>', methods=['PUT'])
+@require_login
+def update_user(user_id):
+    _, _, role = current_user()
+    if role != 'admin':
+        return jsonify({'success': False, 'message': '权限不足'}), 403
+    data      = request.get_json(force=True)
+    is_active = data.get('is_active')
+    u_role    = data.get('role')
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        if is_active is not None and u_role:
+            cur.execute('UPDATE users SET is_active=?, role=? WHERE id=?',
+                        (1 if is_active else 0, u_role, user_id))
+        elif is_active is not None:
+            cur.execute('UPDATE users SET is_active=? WHERE id=?',
+                        (1 if is_active else 0, user_id))
+        elif u_role:
+            cur.execute('UPDATE users SET role=? WHERE id=?', (u_role, user_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f'Update user error: {e}')
+        return jsonify({'success': False, 'message': '更新失败'}), 500
+
+@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+@require_login
+def delete_user(user_id):
+    uid, _, role = current_user()
+    if role != 'admin':
+        return jsonify({'success': False, 'message': '权限不足'}), 403
+    if user_id == uid:
+        return jsonify({'success': False, 'message': '不能删除自己'}), 400
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute('DELETE FROM users WHERE id=?', (user_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f'Delete user error: {e}')
+        return jsonify({'success': False, 'message': '删除失败'}), 500
+
+# ── 静态文件（上传图片）─────────────────────────────────────────
+@app.route('/uploads/<path:filename>')
+def uploaded_file(filename):
+    return send_from_directory(config.UPLOAD_FOLDER, filename)
+
+# ── 前端静态文件（当不使用 Nginx 时由 Flask 直接托管）──────────
+_FRONTEND_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '..', 'frontend')
+)
+
+@app.route('/')
+def frontend_index():
+    return send_from_directory(_FRONTEND_DIR, 'login.html')
+
+@app.route('/<path:filename>')
+def frontend_static(filename):
+    # Reject any path that attempts directory traversal
+    if '..' in filename:
+        return jsonify({'error': 'Not found'}), 404
+    return send_from_directory(_FRONTEND_DIR, filename)
+
+# ── 启动 ───────────────────────────────────────────────────────
+if __name__ == '__main__':
+    app.run(host=config.HOST, port=config.PORT, debug=config.DEBUG)

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>自然场景文种识别系统</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+           background:#f0f7ff; height:100vh; overflow:hidden; display:flex; }
+
+    /* ── 侧边栏 ── */
+    #sidebar {
+      width: 240px; min-width: 240px;
+      background: linear-gradient(180deg, #1e3a8a 0%, #1d4ed8 60%, #2563eb 100%);
+      display: flex; flex-direction: column;
+      box-shadow: 4px 0 20px rgba(37,99,235,.2);
+      transition: width .3s;
+    }
+    .sidebar-logo {
+      padding: 1.5rem 1.25rem;
+      border-bottom: 1px solid rgba(255,255,255,.15);
+    }
+    .sidebar-logo .logo-icon {
+      width:48px; height:48px; border-radius:14px;
+      background:rgba(255,255,255,.2); display:flex; align-items:center; justify-content:center;
+    }
+    .nav-item {
+      display:flex; align-items:center; gap:.875rem;
+      padding:.75rem 1.25rem; margin:.125rem .75rem;
+      border-radius:.875rem; cursor:pointer; color:rgba(255,255,255,.75);
+      font-size:.9rem; font-weight:500; transition:all .2s; text-decoration:none;
+    }
+    .nav-item:hover, .nav-item.active {
+      background:rgba(255,255,255,.18); color:#fff;
+    }
+    .nav-item.active { background:rgba(255,255,255,.22); }
+    .nav-item i { width:20px; text-align:center; font-size:1rem; }
+    .user-area {
+      padding: 1rem 1.25rem;
+      border-top: 1px solid rgba(255,255,255,.15);
+      margin-top: auto;
+    }
+    .user-avatar {
+      width:38px; height:38px; border-radius:50%;
+      background:rgba(255,255,255,.25); display:flex; align-items:center; justify-content:center;
+      font-size:.9rem; color:#fff; font-weight:600; flex-shrink:0;
+    }
+    .logout-btn {
+      display:flex; align-items:center; gap:.5rem;
+      padding:.5rem .75rem; border-radius:.75rem; cursor:pointer;
+      color:rgba(255,255,255,.7); font-size:.825rem; transition:all .2s;
+      background:none; border:none; width:100%; margin-top:.5rem;
+    }
+    .logout-btn:hover { background:rgba(255,255,255,.15); color:#fff; }
+
+    /* ── 主内容区 ── */
+    #mainArea { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+    #topbar {
+      background:#fff; height:60px; min-height:60px;
+      display:flex; align-items:center; justify-content:space-between;
+      padding:0 1.5rem; border-bottom:1.5px solid #e2e8f0;
+      box-shadow:0 2px 8px rgba(0,0,0,.04);
+    }
+    #contentFrame {
+      flex:1; border:none; width:100%; background:#f0f7ff;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── 侧边栏 ── -->
+<div id="sidebar">
+  <div class="sidebar-logo">
+    <div class="flex items-center gap-3">
+      <div class="logo-icon"><i class="fas fa-globe-asia text-white text-xl"></i></div>
+      <div>
+        <div class="text-white font-bold text-sm leading-tight">文种识别系统</div>
+        <div class="text-blue-200 text-xs mt-0.5">Language Recognition</div>
+      </div>
+    </div>
+  </div>
+
+  <nav class="flex-1 py-4 px-2 flex flex-col gap-0.5">
+    <div class="text-blue-300 text-xs font-semibold px-3 py-2 mt-1">主要功能</div>
+    <a href="home.html"     class="nav-item" onclick="loadPage(event,'home.html')"     data-page="home">
+      <i class="fas fa-home"></i><span>首 页</span>
+    </a>
+    <a href="upload.html"   class="nav-item" onclick="loadPage(event,'upload.html')"   data-page="upload">
+      <i class="fas fa-search"></i><span>图像识别</span>
+    </a>
+    <a href="history.html"  class="nav-item" onclick="loadPage(event,'history.html')"  data-page="history">
+      <i class="fas fa-clock-rotate-left"></i><span>历史记录</span>
+    </a>
+    <div class="text-blue-300 text-xs font-semibold px-3 py-2 mt-3">系统管理</div>
+    <a href="settings.html" class="nav-item" onclick="loadPage(event,'settings.html')" data-page="settings">
+      <i class="fas fa-gear"></i><span>系统设置</span>
+    </a>
+  </nav>
+
+  <div class="user-area">
+    <div class="flex items-center gap-3">
+      <div class="user-avatar" id="avatarLetter">U</div>
+      <div class="flex-1 min-w-0">
+        <div class="text-white font-medium text-sm truncate" id="sidebarUsername">用户</div>
+        <div class="text-blue-200 text-xs" id="sidebarRole">—</div>
+      </div>
+    </div>
+    <button class="logout-btn" onclick="logout()">
+      <i class="fas fa-right-from-bracket"></i><span>退出登录</span>
+    </button>
+  </div>
+</div>
+
+<!-- ── 主区域 ── -->
+<div id="mainArea">
+  <!-- 顶部栏 -->
+  <div id="topbar">
+    <div class="flex items-center gap-3">
+      <h1 class="text-base font-semibold text-gray-700" id="pageTitle">首页</h1>
+      <div class="hidden md:flex items-center text-xs text-gray-400 gap-1">
+        <i class="fas fa-house text-xs"></i>
+        <span>/</span>
+        <span id="breadcrumb">首页</span>
+      </div>
+    </div>
+    <div class="flex items-center gap-4">
+      <div class="text-xs text-gray-400 hidden md:block" id="topDatetime"></div>
+      <div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center">
+        <i class="fas fa-bell text-blue-400 text-sm"></i>
+      </div>
+      <div class="flex items-center gap-2 cursor-pointer" onclick="loadPage(null,'settings.html')">
+        <div class="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold" id="topAvatarLetter">U</div>
+        <span class="text-sm text-gray-600 hidden md:block" id="topUsername">用户</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- iframe 内容区 -->
+  <iframe id="contentFrame" src="home.html" title="内容区"></iframe>
+</div>
+
+<script>
+  const API = window.location.origin;
+
+  // ── 鉴权 ──────────────────────────────────────────────────
+  const userStr = localStorage.getItem('c3f_user');
+  if (!userStr) { localStorage.removeItem('c3f_user'); window.location.href = 'login.html'; }
+  const user = JSON.parse(userStr || '{}');
+  if (!user.user_id) { localStorage.removeItem('c3f_user'); window.location.href = 'login.html'; }
+
+  // 初始化用户信息
+  document.getElementById('sidebarUsername').textContent = user.username || '用户';
+  document.getElementById('sidebarRole').textContent     = user.role === 'admin' ? '管理员' : '普通用户';
+  document.getElementById('topUsername').textContent     = user.username || '用户';
+  const initial = (user.username || 'U')[0].toUpperCase();
+  document.getElementById('avatarLetter').textContent    = initial;
+  document.getElementById('topAvatarLetter').textContent = initial;
+
+  // ── 时间 ──────────────────────────────────────────────────
+  function updateClock() {
+    const now = new Date();
+    document.getElementById('topDatetime').textContent =
+      now.toLocaleDateString('zh-CN', {year:'numeric',month:'2-digit',day:'2-digit'}) + ' ' +
+      now.toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  }
+  updateClock();
+  setInterval(updateClock, 1000);
+
+  // ── 页面加载 ──────────────────────────────────────────────
+  const pageTitles = {
+    'home':     ['首页', '首页'],
+    'upload':   ['图像识别', '图像识别'],
+    'history':  ['历史记录', '历史记录'],
+    'settings': ['系统设置', '系统设置'],
+  };
+
+  function loadPage(e, page) {
+    if (e) e.preventDefault();
+    const frame = document.getElementById('contentFrame');
+    frame.src = page;
+
+    // 高亮当前菜单
+    document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+    const key = page.replace('.html','');
+    const active = document.querySelector(`[data-page="${key}"]`);
+    if (active) active.classList.add('active');
+
+    // 更新顶部标题
+    const info = pageTitles[key] || [page, page];
+    document.getElementById('pageTitle').textContent  = info[0];
+    document.getElementById('breadcrumb').textContent = info[1];
+  }
+
+  // 默认高亮首页
+  document.querySelector('[data-page="home"]').classList.add('active');
+
+  // ── 退出登录 ──────────────────────────────────────────────
+  async function logout() {
+    try { await fetch(`${API}/api/logout`, {method:'POST', credentials:'include'}); } catch(e){}
+    localStorage.removeItem('c3f_user');
+    window.location.href = 'login.html';
+  }
+</script>
+</body>
+</html>

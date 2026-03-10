@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 - 自然场景文种识别系统</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <style>
+    body { font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+    .input-field {
+      width:100%; padding:.75rem 1rem; border:1.5px solid #e2e8f0; border-radius:.75rem;
+      font-size:.95rem; outline:none; transition:border .2s,box-shadow .2s; color:#1e293b;
+    }
+    .input-field:focus { border-color:#3b82f6; box-shadow:0 0 0 3px rgba(59,130,246,.15); }
+    .btn-primary {
+      width:100%; padding:.8rem; border-radius:.75rem; font-weight:600; font-size:1rem;
+      background:linear-gradient(135deg,#3b82f6,#6366f1); color:#fff; border:none;
+      cursor:pointer; transition:opacity .2s,transform .1s;
+    }
+    .btn-primary:hover  { opacity:.92; }
+    .btn-primary:active { transform:scale(.98); }
+    .btn-primary:disabled { opacity:.6; cursor:not-allowed; }
+  </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 flex items-center justify-center p-4">
+
+  <!-- 背景装饰 -->
+  <div class="absolute inset-0 overflow-hidden pointer-events-none">
+    <div class="absolute -top-32 -left-32 w-96 h-96 bg-blue-100 rounded-full opacity-50"></div>
+    <div class="absolute -bottom-32 -right-32 w-80 h-80 bg-indigo-100 rounded-full opacity-50"></div>
+    <div class="absolute top-1/2 left-10 w-24 h-24 bg-sky-100 rounded-full opacity-40"></div>
+  </div>
+
+  <!-- 登录卡片 -->
+  <div class="relative bg-white rounded-3xl shadow-2xl p-10 w-full max-w-md border border-gray-100">
+
+    <!-- Logo & 标题 -->
+    <div class="text-center mb-8">
+      <div class="inline-flex items-center justify-center w-20 h-20 rounded-2xl mb-4"
+           style="background:linear-gradient(135deg,#3b82f6,#6366f1)">
+        <i class="fas fa-globe-asia text-white text-3xl"></i>
+      </div>
+      <h1 class="text-2xl font-bold text-gray-800">自然场景文种识别系统</h1>
+      <p class="text-sm text-gray-400 mt-1">Natural Scene Text Language Recognition</p>
+    </div>
+
+    <!-- 错误提示 -->
+    <div id="errorMsg" class="hidden bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl mb-5 text-sm flex items-center gap-2">
+      <i class="fas fa-circle-exclamation"></i>
+      <span id="errorText">用户名或密码错误</span>
+    </div>
+
+    <!-- 登录表单 -->
+    <form id="loginForm" autocomplete="off">
+      <div class="mb-5">
+        <label class="block text-sm font-medium text-gray-600 mb-2">
+          <i class="fas fa-user text-blue-400 mr-1"></i>用户名
+        </label>
+        <input id="username" type="text" placeholder="请输入用户名" class="input-field" required>
+      </div>
+      <div class="mb-7">
+        <label class="block text-sm font-medium text-gray-600 mb-2">
+          <i class="fas fa-lock text-blue-400 mr-1"></i>密码
+        </label>
+        <div class="relative">
+          <input id="password" type="password" placeholder="请输入密码" class="input-field pr-12" required>
+          <button type="button" onclick="togglePwd()"
+            class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 w-8 h-8 flex items-center justify-center">
+            <i id="eyeIcon" class="fas fa-eye text-sm"></i>
+          </button>
+        </div>
+      </div>
+      <button type="submit" id="loginBtn" class="btn-primary">
+        <span id="loginBtnContent">
+          <i class="fas fa-sign-in-alt mr-2"></i>登 录
+        </span>
+      </button>
+    </form>
+
+    <!-- 提示 -->
+    <p class="text-center text-xs text-gray-400 mt-6">
+      演示账号：admin / admin123 &nbsp;|&nbsp; user1 / user123
+    </p>
+    <p class="text-center text-xs text-gray-300 mt-2">
+      自然场景文种识别系统 &copy; 2025
+    </p>
+  </div>
+
+  <script>
+    const API = window.location.origin;
+
+    // 已登录则跳主页
+    if (localStorage.getItem('c3f_user')) {
+      try {
+        const u = JSON.parse(localStorage.getItem('c3f_user'));
+        if (u && u.user_id) window.location.href = 'index.html';
+      } catch(e) { localStorage.removeItem('c3f_user'); }
+    }
+
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+      const btn      = document.getElementById('loginBtn');
+      const content  = document.getElementById('loginBtnContent');
+
+      btn.disabled = true;
+      content.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>登录中...';
+      hideError();
+
+      try {
+        const res = await fetch(`${API}/api/login`, {
+          method:      'POST',
+          headers:     { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body:        JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        if (data.success) {
+          localStorage.setItem('c3f_user', JSON.stringify(data));
+          window.location.href = 'index.html';
+        } else {
+          showError(data.message || '用户名或密码错误');
+        }
+      } catch (err) {
+        showError('无法连接服务器，请检查网络或服务器状态');
+      } finally {
+        btn.disabled = false;
+        content.innerHTML = '<i class="fas fa-sign-in-alt mr-2"></i>登 录';
+      }
+    });
+
+    function showError(msg) {
+      document.getElementById('errorText').textContent = msg;
+      document.getElementById('errorMsg').classList.remove('hidden');
+    }
+    function hideError() {
+      document.getElementById('errorMsg').classList.add('hidden');
+    }
+    function togglePwd() {
+      const p = document.getElementById('password');
+      const i = document.getElementById('eyeIcon');
+      p.type = p.type === 'password' ? 'text' : 'password';
+      i.className = p.type === 'password' ? 'fas fa-eye text-sm' : 'fas fa-eye-slash text-sm';
+    }
+  </script>
+</body>
+</html>
